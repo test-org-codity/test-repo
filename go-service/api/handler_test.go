@@ -36,24 +36,11 @@ func (m *mockParser) CalculateMetrics(content string) interface{} {
 }
 
 func newTestHandler() *Handler {
-	// Create handler with a real cache but mocked parser
 	h := &Handler{
-		parser: parser.NewParser(), // will be overwritten with mock
+		parser: parser.NewParser(),
 		cache:  make(map[string]CacheEntry),
 	}
 	return h
-}
-
-func TestParseFile_SuccessAndCacheBehavior(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	mockP := new(mockParser)
-	h := newTestHandler()
-	h.parser = (*parser.Parser)(nil) // ensure we don't accidentally use real parser
-	// We need to satisfy the interface used in handler; use type assertions via struct embedding not available,
-	// so we directly assign mock via unsafe; instead we wrap calls via local handler for tests.
-	// To keep it simple, reassign methods via type conversion is not possible, so we test by calling methods on handler with mock through field of same name via interface{}
-	// To avoid reflection tricks, we redefine handler with parser as interface in tests:
 }
 
 type testParserInterface interface {
@@ -188,7 +175,6 @@ func TestParseFile_Scenarios(t *testing.T) {
 			name: "success with cache hit",
 			body: `{"content": "code", "path": "file.go"}`,
 			setupMock: func() {
-				// prime cache manually
 				key := h.generateCacheKey("parse", "code"+"file.go")
 				h.setCache(key, parsedResult{Value: "cached"}, 5*time.Minute)
 			},
@@ -199,6 +185,7 @@ func TestParseFile_Scenarios(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			mockP.ExpectedCalls = nil
 			tt.setupMock()
 
 			w := httptest.NewRecorder()
@@ -268,6 +255,7 @@ func TestAnalyzeDiff_Scenarios(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			mockP.ExpectedCalls = nil
 			tt.setupMock()
 
 			w := httptest.NewRecorder()
@@ -337,6 +325,7 @@ func TestCalculateMetrics_ScenariosAndCache(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			mockP.ExpectedCalls = nil
 			tt.setupMock()
 
 			w := httptest.NewRecorder()
@@ -403,12 +392,10 @@ func TestGetFromCache_ExpiredAndNonexistent(t *testing.T) {
 		cache: make(map[string]CacheEntry),
 	}
 
-	// nonexistent
 	data, ok := h.getFromCache("missing")
 	assert.False(t, ok)
 	assert.Nil(t, data)
 
-	// expired
 	h.cache["expired"] = CacheEntry{
 		Data:      "value",
 		ExpiresAt: time.Now().Add(-1 * time.Minute),
@@ -418,7 +405,6 @@ func TestGetFromCache_ExpiredAndNonexistent(t *testing.T) {
 	assert.False(t, ok)
 	assert.Nil(t, data)
 
-	// valid
 	h.cache["valid"] = CacheEntry{
 		Data:      "value",
 		ExpiresAt: time.Now().Add(1 * time.Minute),

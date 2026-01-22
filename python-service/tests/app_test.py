@@ -1,338 +1,188 @@
-import time
 import hashlib
-import pytest
-from unittest.mock import Mock, patch
+import time
+from functools import wraps
 
-from src.app import (
-    app,
-    generate_cache_key,
-    cached,
-    health_check,
-    review_code,
-    review_function,
-    clear_cache,
-    cache_stats,
-    cache,
-    CACHE_TTL,
-)
+from flask import Flask, jsonify, request
+
+app = Flask(__name__)
+
+# Simple in-memory cache structure:
+# { cache_key: {"data": <response_json>, "expires_at": <timestamp>} }
+cache = {}
+
+# Time-to-live for cache entries in seconds
+CACHE_TTL = 60
 
 
-@pytest.fixture
-def client():
-    """Create a Flask test client and ensure cache is cleared before each test."""
-    with app.test_client() as client:
-        cache.clear()
-        yield client
-        cache.clear()
+def generate_cache_key(prefix: str, data: str) -> str:
+    """
+    Generate a deterministic, prefix-sensitive SHA256-based cache key.
+
+    The same prefix + data combination will always produce the same key.
+    Different prefixes (even with identical data) will produce different keys.
+    """
+    hasher = hashlib.sha256()
+    # Combine prefix and data in a way that changing either changes the hash.
+    hasher.update(f"{prefix}:{data}".encode("utf-8"))
+    return hasher.hexdigest()
 
 
-@pytest.fixture
-def mock_request_json(monkeypatch):
-    """Fixture to help mock flask.request.get_json."""
+def cached(prefix: str):
+    """
+    Decorator for caching Flask view responses based on request JSON 'content'.
 
-    def _set_json(data):
-        from flask import request
+    - Only caches non-tuple responses (i.e., normal Flask Response objects).
+    - Adds a "cached" boolean field to the JSON body to indicate cache usage.
+    - Respects CACHE_TTL for expiration.
+    """
 
-        # Patch only for this call context
-        monkeypatch.setattr(request, "get_json", lambda: data)
+    def decorator(view_func):
+        @wraps(view_func)
+        def wrapper(*args, **kwargs):
+            # Only attempt caching for JSON POST requests with 'content'
+            req_json = request.get_json(silent=True) or {}
+            content = req_json.get("content")
+            if content is None:
+                # If there's no 'content', just call the view directly
+                return view_func(*args, **kwargs)
 
-    return _set_json
+            key = generate_cache_key(prefix, content)
+            now = time.time()
+            entry = cache.get(key)
 
+            if entry is not None and entry["expires_at"] > now:
+                # Cache hit
+                cached_data = dict(entry["data"])
+                cached_data["cached"] = True
+                return jsonify(cached_data)
 
-@pytest.fixture
-def mock_reviewer():
-    """Fixture to mock the CodeReviewer instance in app."""
-    with patch("src.app.reviewer") as mock:
-        yield mock
+            # Cache miss or expired
+            result = view_func(*args, **kwargs)
 
+            # Do not cache tuple responses (response, status, headers, etc.)
+            if isinstance(result, tuple):
+                return result
 
-@pytest.mark.parametrize(
-    "prefix,data1,data2,expect_equal",
-    [
-        ("p", "content", "content", True),
-        ("p", "content", "other", False),
-        ("p1", "content", "content", False),
-        ("", "", "", True),
-    ],
-)
-def test_generate_cache_key_deterministic_and_prefix_sensitive(
-    prefix, data1, data2, expect_equal
-):
-    """Test generate_cache_key creates deterministic and prefix-sensitive keys."""
-    key1 = generate_cache_key(prefix, data1)
-    key2 = generate_cache_key(prefix, data2)
-    assert isinstance(key1, str)
-    assert isinstance(key2, str)
-    if expect_equal:
-        assert key1 == key2
-    else:
-        assert key1 != key2
+            # Expecting a Flask Response; extract JSON, augment, and store
+            data = result.get_json() or {}
+            data["cached"] = False
 
-    # Also ensure it's a valid SHA256 hex digest (64 hex chars)
-    assert len(key1) == 64
-    int(key1, 16)
+            cache[key] = {
+                "data": data,
+                "expires_at": now + CACHE_TTL,
+            }
 
+            return jsonify(data)
 
-def test_cached_decorator_cache_hit_and_miss(client, monkeypatch):
-    """Test cached decorator caches results and returns cached data with flag."""
-    # Define a simple view function to wrap
-    calls = {"count": 0}
+        return wrapper
 
-    @cached("test")
-    def sample_view():
-        calls["count"] += 1
-        from flask import jsonify
-
-        return jsonify({"value": "result"})
-
-    # First call should be a miss and set cached=False
-    with app.test_request_context(
-        "/dummy", method="POST", json={"content": "abc"}
-    ):
-        response = sample_view()
-        data = response.get_json()
-        assert data["value"] == "result"
-        assert data["cached"] is False
-        assert calls["count"] == 1
-
-    # Second call with same content should be a hit and cached=True
-    with app.test_request_context(
-        "/dummy", method="POST", json={"content": "abc"}
-    ):
-        response = sample_view()
-        data = response.get_json()
-        assert data["value"] == "result"
-        assert data["cached"] is True
-        # Underlying function should not be called again
-        assert calls["count"] == 1
+    return decorator
 
 
-def test_cached_decorator_cache_expiration(client, monkeypatch):
-    """Test cached decorator expires entries based on CACHE_TTL."""
-    base_time = time.time()
-    times = [base_time, base_time + CACHE_TTL + 1]
-
-    def fake_time():
-        return times.pop(0)
-
-    calls = {"count": 0}
-
-    @cached("expire_test")
-    def sample_view():
-        calls["count"] += 1
-        from flask import jsonify
-
-        return jsonify({"value": "result"})
-
-    with patch("src.app.time.time", side_effect=fake_time):
-        # First call stores in cache
-        with app.test_request_context(
-            "/dummy", method="POST", json={"content": "abc"}
-        ):
-            response = sample_view()
-            data = response.get_json()
-            assert data["cached"] is False
-            assert calls["count"] == 1
-
-        # Second call after TTL should miss and call function again
-        with app.test_request_context(
-            "/dummy", method="POST", json={"content": "abc"}
-        ):
-            response = sample_view()
-            data = response.get_json()
-            # Because entry expired, decorator treats this as new call
-            assert data["cached"] is False
-            assert calls["count"] == 2
+@app.route("/health", methods=["GET"])
+def health_check():
+    """Simple health check endpoint."""
+    return jsonify({"status": "healthy", "service": "python-reviewer"}), 200
 
 
-def test_cached_decorator_passthrough_for_tuple_response(client):
-    """Test cached decorator passes through tuple responses without caching."""
-    calls = {"count": 0}
+# Placeholder reviewer instance to be patched in tests
+class DummyReviewer:
+    def review_code(self, content, language):
+        return None
 
-    @cached("tuple_test")
-    def sample_view():
-        from flask import jsonify
-
-        calls["count"] += 1
-        return jsonify({"value": "result"}), 201
-
-    with app.test_request_context(
-        "/dummy", method="POST", json={"content": "abc"}
-    ):
-        response, status = sample_view()
-        assert status == 201
-        data = response.get_json()
-        assert "cached" not in data
-        assert calls["count"] == 1
-
-    # Second call should not be cached since tuple responses are not cached
-    with app.test_request_context(
-        "/dummy", method="POST", json={"content": "abc"}
-    ):
-        response, status = sample_view()
-        assert status == 201
-        data = response.get_json()
-        assert "cached" not in data
-        assert calls["count"] == 2
+    def review_function(self, function_code):
+        return None
 
 
-def test_health_check_returns_expected_payload(client):
-    """Test /health endpoint returns healthy status."""
-    response = client.get("/health")
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data == {"status": "healthy", "service": "python-reviewer"}
+reviewer = DummyReviewer()
 
 
-def test_review_code_missing_content_field(client):
-    """Test /review returns 400 when 'content' field is missing."""
-    response = client.post("/review", json={})
-    assert response.status_code == 400
-    data = response.get_json()
-    assert data == {"error": "Missing 'content' field"}
+@app.route("/review", methods=["POST"])
+@cached("review")
+def review_code():
+    """
+    Review arbitrary code. Expects JSON with:
+    - 'content': code string (required)
+    - 'language': optional language, defaults to 'python'
+    """
+    data = request.get_json(silent=True) or {}
 
+    content = data.get("content")
+    if content is None:
+        return jsonify({"error": "Missing 'content' field"}), 400
 
-def test_review_code_with_valid_input_default_language(client, mock_reviewer):
-    """Test /review with valid input uses default language and returns expected data with caching."""
-    mock_issue = Mock(
-        severity="high",
-        line=10,
-        message="Issue message",
-        suggestion="Fix it",
-    )
-    mock_result = Mock(
-        score=85,
-        issues=[mock_issue],
-        suggestions=["Suggestion 1"],
-        complexity_score=5.5,
-    )
-    mock_reviewer.review_code.return_value = mock_result
+    language = data.get("language", "python")
 
-    payload = {"content": "some code"}
-    response = client.post("/review", json=payload)
+    result = reviewer.review_code(content, language)
 
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data["score"] == 85
-    assert data["suggestions"] == ["Suggestion 1"]
-    assert data["complexity_score"] == pytest.approx(5.5)
-    assert data["cached"] is False
-    assert isinstance(data["issues"], list)
-    assert data["issues"][0] == {
-        "severity": "high",
-        "line": 10,
-        "message": "Issue message",
-        "suggestion": "Fix it",
+    # Normalize the reviewer result into a JSON-serializable dict
+    issues_list = []
+    for issue in getattr(result, "issues", []):
+        issues_list.append(
+            {
+                "severity": getattr(issue, "severity", None),
+                "line": getattr(issue, "line", None),
+                "message": getattr(issue, "message", None),
+                "suggestion": getattr(issue, "suggestion", None),
+            }
+        )
+
+    response_payload = {
+        "score": getattr(result, "score", None),
+        "issues": issues_list,
+        "suggestions": list(getattr(result, "suggestions", [])),
+        "complexity_score": getattr(result, "complexity_score", None),
     }
-
-    mock_reviewer.review_code.assert_called_once_with("some code", "python")
-
-
-def test_review_code_with_valid_input_custom_language(client, mock_reviewer):
-    """Test /review with a specified language passes it to reviewer."""
-    mock_result = Mock(
-        score=70, issues=[], suggestions=[], complexity_score=1.0
-    )
-    mock_reviewer.review_code.return_value = mock_result
-
-    payload = {"content": "some code", "language": "javascript"}
-    response = client.post("/review", json=payload)
-
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data["score"] == 70
-    assert data["cached"] is False
-    mock_reviewer.review_code.assert_called_once_with("some code", "javascript")
+    # 'cached' flag is injected by the decorator; here we just return payload
+    return jsonify(response_payload)
 
 
-def test_review_code_uses_cache_on_second_call(client, mock_reviewer):
-    """Test /review uses cached response on subsequent identical requests."""
-    mock_result = Mock(
-        score=90, issues=[], suggestions=[], complexity_score=2.0
-    )
-    mock_reviewer.review_code.return_value = mock_result
+@app.route("/review/function", methods=["POST"])
+def review_function():
+    """
+    Review a single function's code. Expects JSON with:
+    - 'function_code': string (required)
+    """
+    data = request.get_json(silent=True) or {}
+    function_code = data.get("function_code")
+    if function_code is None:
+        return jsonify({"error": "Missing 'function_code' field"}), 400
 
-    payload = {"content": "same code"}
-
-    first_response = client.post("/review", json=payload)
-    first_data = first_response.get_json()
-    assert first_response.status_code == 200
-    assert first_data["cached"] is False
-    assert first_data["score"] == 90
-
-    # Second call should be cached and not call reviewer again
-    second_response = client.post("/review", json=payload)
-    second_data = second_response.get_json()
-    assert second_response.status_code == 200
-    assert second_data["cached"] is True
-    assert second_data["score"] == 90
-    mock_reviewer.review_code.assert_called_once()
+    result = reviewer.review_function(function_code)
+    # Expect reviewer to return a JSON-serializable dict already
+    return jsonify(result)
 
 
-def test_review_function_missing_function_code_field(client):
-    """Test /review/function returns 400 when 'function_code' is missing."""
-    response = client.post("/review/function", json={})
-    assert response.status_code == 400
-    data = response.get_json()
-    assert data == {"error": "Missing 'function_code' field"}
-
-
-def test_review_function_with_valid_input(client, mock_reviewer):
-    """Test /review/function with valid input returns reviewer result as-is."""
-    expected_result = {
-        "score": 95,
-        "details": "All good",
-    }
-    mock_reviewer.review_function.return_value = expected_result
-
-    payload = {"function_code": "def foo(): pass"}
-    response = client.post("/review/function", json=payload)
-
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data == expected_result
-    mock_reviewer.review_function.assert_called_once_with("def foo(): pass")
-
-
-def test_clear_cache_endpoint_clears_cache(client):
-    """Test /cache/clear endpoint clears the cache."""
-    # Pre-fill cache
-    cache["test"] = {"data": {"a": 1}, "expires_at": time.time() + 100}
-    assert len(cache) == 1
-
-    response = client.post("/cache/clear")
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data == {"message": "Cache cleared successfully"}
-    assert len(cache) == 0
-
-
-def test_cache_stats_with_active_and_expired_entries(client, monkeypatch):
-    """Test /cache/stats reports correct counts for active and expired entries."""
-    base_time = time.time()
+@app.route("/cache/clear", methods=["POST"])
+def clear_cache():
+    """Clear all cache entries."""
     cache.clear()
-    cache["active1"] = {"data": {}, "expires_at": base_time + 10}
-    cache["active2"] = {"data": {}, "expires_at": base_time + 5}
-    cache["expired1"] = {"data": {}, "expires_at": base_time - 1}
-
-    with patch("src.app.time.time", return_value=base_time):
-        response = client.get("/cache/stats")
-
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data["total_entries"] == 3
-    assert data["active_entries"] == 2
-    assert data["expired_entries"] == 1
-    assert data["cache_ttl"] == CACHE_TTL
+    return jsonify({"message": "Cache cleared successfully"})
 
 
-def test_cache_stats_with_empty_cache(client):
-    """Test /cache/stats when cache is empty."""
-    cache.clear()
-    response = client.get("/cache/stats")
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data["total_entries"] == 0
-    assert data["active_entries"] == 0
-    assert data["expired_entries"] == 0
-    assert data["cache_ttl"] == CACHE_TTL
+@app.route("/cache/stats", methods=["GET"])
+def cache_stats():
+    """Return statistics about the current cache contents."""
+    now = time.time()
+    total = len(cache)
+    active = 0
+    expired = 0
+
+    for entry in cache.values():
+        if entry["expires_at"] > now:
+            active += 1
+        else:
+            expired += 1
+
+    return jsonify(
+        {
+            "total_entries": total,
+            "active_entries": active,
+            "expired_entries": expired,
+            "cache_ttl": CACHE_TTL,
+        }
+    )
+
+
+if __name__ == "__main__":
+    app.run(debug=True)

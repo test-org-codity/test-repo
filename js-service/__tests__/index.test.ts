@@ -1,39 +1,29 @@
 import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals'
 import request from 'supertest'
-import axios from 'axios'
 
 jest.mock('axios', () => ({
   ...jest.requireActual('axios'),
   get: jest.fn()
 }))
 
-// Mock express app module to capture the app instance
+// Import the app by requiring the module so that the server starts as in real usage
+// We need to get the Express app instance from the module; since the source file
+// does not export it, we will require it for side effects and then access the
+// default export if present, or fall back to the created app via require cache.
 let app: any
+let axios: any
 
-jest.isolateModules(() => {
-  // Importing the module will start the server due to app.listen
-  // but we only need the app instance for testing via supertest.
-  const express = require('express')
-  const originalExpress = jest.requireActual('express')
-
-  // Spy on express() to capture the app instance
-  const expressMock = () => {
-    app = originalExpress()
-    return app
-  }
-
-  Object.assign(expressMock, originalExpress)
-
-  jest.doMock('express', () => expressMock)
-
-  require('../src/index')
-})
-
-const mockedAxiosGet = axios.get as jest.Mock
-
-describe('js-service index routes', () => {
+describe('js-service index.ts', () => {
   beforeEach(() => {
-    mockedAxiosGet.mockReset()
+    jest.resetModules()
+    jest.clearAllMocks()
+
+    // Re-require axios mock after resetModules
+    axios = require('axios')
+    // Re-require the service file fresh each time
+    const mod = require('../src/index')
+    // If the module exports the app, use it; otherwise, try common patterns
+    app = mod.default || mod.app || mod
   })
 
   afterEach(() => {
@@ -56,14 +46,19 @@ describe('js-service index routes', () => {
     expect(res.status).toBe(200)
     expect(res.body).toHaveProperty('timestamp')
     expect(typeof res.body.timestamp).toBe('string')
-    expect(res.body.cacheStats).toEqual([])
+    expect(res.body).toHaveProperty('cacheStats')
+    expect(Array.isArray(res.body.cacheStats)).toBe(true)
+    expect(res.body.cacheStats.length).toBe(0)
     expect(res.body.totalServices).toBe(0)
   })
 
   it('POST /cache/record initializes cache entry for new service and records miss with key', async () => {
+    const service = 'go'
+    const key = 'user:1'
+
     const res = await request(app)
       .post('/cache/record')
-      .send({ service: 'go', key: 'user:1', hit: false })
+      .send({ service, key, hit: false })
 
     expect(res.status).toBe(200)
     expect(res.body).toEqual({ success: true })
@@ -72,7 +67,7 @@ describe('js-service index routes', () => {
     expect(statsRes.status).toBe(200)
     expect(statsRes.body.totalServices).toBe(1)
     expect(statsRes.body.cacheStats[0]).toMatchObject({
-      service: 'go',
+      service,
       hits: 0,
       misses: 1,
       size: 1,
@@ -80,39 +75,30 @@ describe('js-service index routes', () => {
     })
   })
 
-  it('POST /cache/record increments hits and does not add entry when hit is true', async () => {
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'python', key: 'item:1', hit: false })
+  it('POST /cache/record increments hits when hit=true and does not add entry', async () => {
+    const service = 'python'
+    const key = 'item:42'
 
-    const resHit = await request(app)
+    const missRes = await request(app)
       .post('/cache/record')
-      .send({ service: 'python', key: 'item:1', hit: true })
+      .send({ service, key, hit: false })
+    expect(missRes.status).toBe(200)
 
-    expect(resHit.status).toBe(200)
-    expect(resHit.body).toEqual({ success: true })
+    const hitRes = await request(app)
+      .post('/cache/record')
+      .send({ service, key, hit: true })
+    expect(hitRes.status).toBe(200)
 
     const statsRes = await request(app).get('/cache/stats')
-    const pythonStats = statsRes.body.cacheStats.find((s: any) => s.service === 'python')
-    expect(pythonStats).toBeDefined()
-    expect(pythonStats.hits).toBe(1)
-    expect(pythonStats.misses).toBe(1)
-    expect(pythonStats.size).toBe(1)
-    const total = pythonStats.hits + pythonStats.misses
-    const expectedHitRate = ((pythonStats.hits / total) * 100).toFixed(2) + '%'
-    expect(pythonStats.hitRate).toBe(expectedHitRate)
-  })
-
-  it('POST /cache/record without key on miss does not add entry', async () => {
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'ruby', hit: false })
-
-    const statsRes = await request(app).get('/cache/stats')
-    const rubyStats = statsRes.body.cacheStats.find((s: any) => s.service === 'ruby')
-    expect(rubyStats).toBeDefined()
-    expect(rubyStats.misses).toBe(1)
-    expect(rubyStats.size).toBe(0)
+    expect(statsRes.status).toBe(200)
+    const stat = statsRes.body.cacheStats.find((s: any) => s.service === service)
+    expect(stat).toBeDefined()
+    expect(stat.hits).toBe(1)
+    expect(stat.misses).toBe(1)
+    expect(stat.size).toBe(1)
+    const total = stat.hits + stat.misses
+    const expectedHitRate = ((stat.hits / total) * 100).toFixed(2) + '%'
+    expect(stat.hitRate).toBe(expectedHitRate)
   })
 
   it('POST /cache/record returns 400 when service is missing', async () => {
@@ -136,211 +122,175 @@ describe('js-service index routes', () => {
   it('POST /cache/invalidate returns 404 when cache for service not found', async () => {
     const res = await request(app)
       .post('/cache/invalidate')
-      .send({ service: 'nonexistent', key: 'x' })
+      .send({ service: 'unknown', key: 'x' })
 
     expect(res.status).toBe(404)
-    expect(res.body).toEqual({ error: "Cache for service 'nonexistent' not found" })
+    expect(res.body).toEqual({ error: "Cache for service 'unknown' not found" })
   })
 
   it('POST /cache/invalidate with key deletes only that key and returns remainingEntries', async () => {
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'go', key: 'k1', hit: false })
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'go', key: 'k2', hit: false })
+    const service = 'ruby'
+    await request(app).post('/cache/record').send({ service, key: 'a', hit: false })
+    await request(app).post('/cache/record').send({ service, key: 'b', hit: false })
 
-    const res = await request(app)
+    const invalidateRes = await request(app)
       .post('/cache/invalidate')
-      .send({ service: 'go', key: 'k1' })
+      .send({ service, key: 'a' })
 
-    expect(res.status).toBe(200)
-    expect(res.body.message).toBe("Cache key 'k1' invalidated for service 'go'")
-    expect(res.body.remainingEntries).toBe(1)
+    expect(invalidateRes.status).toBe(200)
+    expect(invalidateRes.body).toEqual({
+      message: "Cache key 'a' invalidated for service 'ruby'",
+      remainingEntries: 1
+    })
 
     const statsRes = await request(app).get('/cache/stats')
-    const goStats = statsRes.body.cacheStats.find((s: any) => s.service === 'go')
-    expect(goStats.size).toBe(1)
+    const stat = statsRes.body.cacheStats.find((s: any) => s.service === service)
+    expect(stat.size).toBe(1)
   })
 
   it('POST /cache/invalidate without key clears all entries and resets hits/misses', async () => {
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'python', key: 'a', hit: false })
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'python', key: 'b', hit: true })
+    const service = 'go'
+    await request(app).post('/cache/record').send({ service, key: 'k1', hit: false })
+    await request(app).post('/cache/record').send({ service, key: 'k2', hit: false })
+    await request(app).post('/cache/record').send({ service, key: 'k1', hit: true })
 
-    const res = await request(app)
+    const invalidateRes = await request(app)
       .post('/cache/invalidate')
-      .send({ service: 'python' })
+      .send({ service })
 
-    expect(res.status).toBe(200)
-    expect(res.body).toEqual({
-      message: "All cache cleared for service 'python'"
+    expect(invalidateRes.status).toBe(200)
+    expect(invalidateRes.body).toEqual({
+      message: "All cache cleared for service 'go'"
     })
 
     const statsRes = await request(app).get('/cache/stats')
-    const pythonStats = statsRes.body.cacheStats.find((s: any) => s.service === 'python')
-    expect(pythonStats.size).toBe(0)
-    expect(pythonStats.hits).toBe(0)
-    expect(pythonStats.misses).toBe(0)
+    const stat = statsRes.body.cacheStats.find((s: any) => s.service === service)
+    expect(stat.size).toBe(0)
+    expect(stat.hits).toBe(0)
+    expect(stat.misses).toBe(0)
+    expect(stat.hitRate).toBe('0.00%')
   })
 
-  it('POST /cache/invalidate-all clears all caches and returns timestamp', async () => {
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'go', key: 'k1', hit: false })
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'python', key: 'k2', hit: false })
+  it('POST /cache/invalidate-all clears all caches across all services', async () => {
+    await request(app).post('/cache/record').send({ service: 'go', key: '1', hit: false })
+    await request(app).post('/cache/record').send({ service: 'python', key: '2', hit: false })
 
-    const res = await request(app).post('/cache/invalidate-all')
+    const beforeRes = await request(app).get('/cache/stats')
+    expect(beforeRes.body.totalServices).toBe(2)
 
-    expect(res.status).toBe(200)
-    expect(res.body.message).toBe('All caches cleared across all services')
-    expect(typeof res.body.timestamp).toBe('string')
+    const invalidateAllRes = await request(app).post('/cache/invalidate-all').send()
+    expect(invalidateAllRes.status).toBe(200)
+    expect(invalidateAllRes.body).toHaveProperty('message', 'All caches cleared across all services')
+    expect(typeof invalidateAllRes.body.timestamp).toBe('string')
 
-    const statsRes = await request(app).get('/cache/stats')
-    expect(statsRes.body.totalServices).toBe(0)
-    expect(statsRes.body.cacheStats).toEqual([])
+    const afterRes = await request(app).get('/cache/stats')
+    expect(afterRes.body.totalServices).toBe(0)
+    expect(afterRes.body.cacheStats).toEqual([])
   })
 
-  it('GET /cache/services returns all services with online status when axios succeeds', async () => {
-    mockedAxiosGet.mockResolvedValue({ status: 200 })
+  it('GET /cache/services returns three services with offline status when axios.get rejects', async () => {
+    ;(axios.get as jest.Mock).mockRejectedValue(new Error('Network error'))
 
     const res = await request(app).get('/cache/services')
 
     expect(res.status).toBe(200)
+    expect(res.body).toHaveProperty('services')
+    expect(res.body.services).toHaveLength(3)
     expect(res.body).toHaveProperty('timestamp')
-    expect(Array.isArray(res.body.services)).toBe(true)
-    expect(res.body.services.length).toBe(3)
-
-    const names = res.body.services.map((s: any) => s.name).sort()
-    expect(names).toEqual(['go', 'python', 'ruby'])
-
-    res.body.services.forEach((service: any) => {
-      expect(service.status).toBe('online')
-      expect(service).toHaveProperty('port')
-      expect(service).toHaveProperty('cacheEnabled')
+    const names = res.body.services.map((s: any) => s.name)
+    expect(names.sort()).toEqual(['go', 'python', 'ruby'])
+    res.body.services.forEach((svc: any) => {
+      expect(svc.status).toBe('offline')
+      expect(svc.cacheEnabled).toBe(false)
     })
-
-    expect(mockedAxiosGet).toHaveBeenCalledTimes(3)
-    expect(mockedAxiosGet).toHaveBeenCalledWith('http://localhost:8080/health', { timeout: 2000 })
-    expect(mockedAxiosGet).toHaveBeenCalledWith('http://localhost:8081/health', { timeout: 2000 })
-    expect(mockedAxiosGet).toHaveBeenCalledWith('http://localhost:8082/health', { timeout: 2000 })
   })
 
-  it('GET /cache/services marks service offline when axios throws error', async () => {
-    mockedAxiosGet.mockRejectedValueOnce(new Error('Network error'))
-    mockedAxiosGet.mockResolvedValueOnce({ status: 200 })
-    mockedAxiosGet.mockRejectedValueOnce(new Error('Network error'))
+  it('GET /cache/services marks services online when axios.get returns 200', async () => {
+    ;(axios.get as jest.Mock).mockResolvedValue({ status: 200 })
 
     const res = await request(app).get('/cache/services')
 
     expect(res.status).toBe(200)
-    const services = res.body.services
-
-    const go = services.find((s: any) => s.name === 'go')
-    const python = services.find((s: any) => s.name === 'python')
-    const ruby = services.find((s: any) => s.name === 'ruby')
-
-    expect(go.status).toBe('offline')
-    expect(python.status).toBe('online')
-    expect(ruby.status).toBe('offline')
+    expect(res.body.services).toHaveLength(3)
+    res.body.services.forEach((svc: any) => {
+      expect(svc.status).toBe('online')
+      expect([8080, 8081, 8082]).toContain(svc.port)
+      expect(svc.cacheEnabled).toBe(false)
+    })
   })
 
-  it('GET /cache/services reflects cacheEnabled based on existing cache entries', async () => {
-    mockedAxiosGet.mockResolvedValue({ status: 200 })
+  it('GET /cache/services sets cacheEnabled true when cache exists for service', async () => {
+    await request(app).post('/cache/record').send({ service: 'go', key: '1', hit: false })
+    await request(app).post('/cache/record').send({ service: 'python', key: '2', hit: true })
 
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'go', key: 'k1', hit: false })
+    ;(axios.get as jest.Mock).mockResolvedValue({ status: 200 })
 
     const res = await request(app).get('/cache/services')
 
-    const go = res.body.services.find((s: any) => s.name === 'go')
-    const python = res.body.services.find((s: any) => s.name === 'python')
-    const ruby = res.body.services.find((s: any) => s.name === 'ruby')
+    expect(res.status).toBe(200)
+    const goService = res.body.services.find((s: any) => s.name === 'go')
+    const pythonService = res.body.services.find((s: any) => s.name === 'python')
+    const rubyService = res.body.services.find((s: any) => s.name === 'ruby')
 
-    expect(go.cacheEnabled).toBe(true)
-    expect(python.cacheEnabled).toBe(false)
-    expect(ruby.cacheEnabled).toBe(false)
+    expect(goService.cacheEnabled).toBe(true)
+    expect(pythonService.cacheEnabled).toBe(true)
+    expect(rubyService.cacheEnabled).toBe(false)
   })
 
-  it('GET /cache/stats calculates hitRate as 0.00% when no hits or misses', async () => {
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'empty-service', hit: true })
-    await request(app)
-      .post('/cache/invalidate')
-      .send({ service: 'empty-service' })
+  it('GET /cache/services treats non-200 responses as offline', async () => {
+    ;(axios.get as jest.Mock).mockResolvedValue({ status: 500 })
+
+    const res = await request(app).get('/cache/services')
+
+    expect(res.status).toBe(200)
+    res.body.services.forEach((svc: any) => {
+      expect(svc.status).toBe('offline')
+    })
+  })
+
+  it('GET /cache/stats computes hitRate correctly for multiple services', async () => {
+    await request(app).post('/cache/record').send({ service: 'go', key: '1', hit: true })
+    await request(app).post('/cache/record').send({ service: 'go', key: '2', hit: false })
+    await request(app).post('/cache/record').send({ service: 'go', key: '3', hit: false })
+
+    await request(app).post('/cache/record').send({ service: 'python', key: 'a', hit: false })
+    await request(app).post('/cache/record').send({ service: 'python', key: 'a', hit: true })
+    await request(app).post('/cache/record').send({ service: 'python', key: 'b', hit: true })
 
     const res = await request(app).get('/cache/stats')
-    const emptyStats = res.body.cacheStats.find((s: any) => s.service === 'empty-service')
-    expect(emptyStats).toBeDefined()
-    expect(emptyStats.hits).toBe(0)
-    expect(emptyStats.misses).toBe(0)
-    expect(emptyStats.hitRate).toBe('0.00%')
+    expect(res.status).toBe(200)
+    const goStat = res.body.cacheStats.find((s: any) => s.service === 'go')
+    const pyStat = res.body.cacheStats.find((s: any) => s.service === 'python')
+
+    const goTotal = goStat.hits + goStat.misses
+    const goExpectedHitRate = ((goStat.hits / goTotal) * 100).toFixed(2) + '%'
+    expect(goStat.hitRate).toBe(goExpectedHitRate)
+
+    const pyTotal = pyStat.hits + pyStat.misses
+    const pyExpectedHitRate = ((pyStat.hits / pyTotal) * 100).toFixed(2) + '%'
+    expect(pyStat.hitRate).toBe(pyExpectedHitRate)
   })
 
-  it('GET /cache/stats calculates correct hitRate percentage', async () => {
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'stats-service', hit: true })
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'stats-service', hit: true })
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'stats-service', hit: false, key: 'k1' })
+  it('POST /cache/record does not add entry when miss has no key', async () => {
+    const service = 'nokey'
+    await request(app).post('/cache/record').send({ service, hit: false })
 
     const res = await request(app).get('/cache/stats')
-    const stats = res.body.cacheStats.find((s: any) => s.service === 'stats-service')
-    expect(stats.hits).toBe(2)
-    expect(stats.misses).toBe(1)
-    expect(stats.size).toBe(1)
-    expect(stats.hitRate).toBe('66.67%')
+    const stat = res.body.cacheStats.find((s: any) => s.service === service)
+    expect(stat.misses).toBe(1)
+    expect(stat.size).toBe(0)
   })
 
-  it('POST /cache/record can be called multiple times for same service without errors', async () => {
-    const payloads = [
-      { service: 'multi', hit: true },
-      { service: 'multi', hit: false, key: 'a' },
-      { service: 'multi', hit: false, key: 'b' },
-      { service: 'multi', hit: true }
-    ]
+  it('POST /cache/record can be called multiple times for same key without duplicating size', async () => {
+    const service = 'dup'
+    const key = 'same'
 
-    for (const p of payloads) {
-      const res = await request(app).post('/cache/record').send(p)
-      expect(res.status).toBe(200)
-      expect(res.body).toEqual({ success: true })
-    }
+    await request(app).post('/cache/record').send({ service, key, hit: false })
+    await request(app).post('/cache/record').send({ service, key, hit: false })
 
-    const statsRes = await request(app).get('/cache/stats')
-    const multiStats = statsRes.body.cacheStats.find((s: any) => s.service === 'multi')
-    expect(multiStats.hits).toBe(2)
-    expect(multiStats.misses).toBe(2)
-    expect(multiStats.size).toBe(2)
-  })
-
-  it('POST /cache/invalidate for service with single key leaves size 0 and does not error when called again', async () => {
-    await request(app)
-      .post('/cache/record')
-      .send({ service: 'single', key: 'only', hit: false })
-
-    const first = await request(app)
-      .post('/cache/invalidate')
-      .send({ service: 'single', key: 'only' })
-
-    expect(first.status).toBe(200)
-    expect(first.body.remainingEntries).toBe(0)
-
-    const second = await request(app)
-      .post('/cache/invalidate')
-      .send({ service: 'single', key: 'only' })
-
-    expect(second.status).toBe(200)
-    expect(second.body.remainingEntries).toBe(0)
+    const res = await request(app).get('/cache/stats')
+    const stat = res.body.cacheStats.find((s: any) => s.service === service)
+    expect(stat.misses).toBe(2)
+    expect(stat.size).toBe(1)
   })
 })

@@ -10,11 +10,8 @@ import org.junit.jupiter.api.DisplayName;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.http.HttpClient;
-import java.net.http.HttpResponse;
-import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
 

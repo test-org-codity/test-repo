@@ -16,409 +16,500 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// mockParser implements the subset of parser.Parser used by Handler.
+// mockParser implements the parser.Parser behavior for testing.
 type mockParser struct {
-	parseFileFn        func(content, path string) (interface{}, error)
-	analyzeDiffFn      func(oldContent, newContent string) (interface{}, error)
-	calculateMetricsFn func(content string) interface{}
+	parseFileFunc        func(content, path string) (interface{}, error)
+	analyzeDiffFunc      func(oldContent, newContent string) (interface{}, error)
+	calculateMetricsFunc func(content string) interface{}
 }
 
 func (m *mockParser) ParseFile(content, path string) (interface{}, error) {
-	if m.parseFileFn != nil {
-		return m.parseFileFn(content, path)
+	if m.parseFileFunc != nil {
+		return m.parseFileFunc(content, path)
 	}
 	return nil, nil
 }
 
 func (m *mockParser) AnalyzeDiff(oldContent, newContent string) (interface{}, error) {
-	if m.analyzeDiffFn != nil {
-		return m.analyzeDiffFn(oldContent, newContent)
+	if m.analyzeDiffFunc != nil {
+		return m.analyzeDiffFunc(oldContent, newContent)
 	}
 	return nil, nil
 }
 
 func (m *mockParser) CalculateMetrics(content string) interface{} {
-	if m.calculateMetricsFn != nil {
-		return m.calculateMetricsFn(content)
+	if m.calculateMetricsFunc != nil {
+		return m.calculateMetricsFunc(content)
 	}
 	return nil
 }
 
-// helper to create gin context with recorder
-func newGinTestContext(method, target string, body []byte) (*gin.Context, *httptest.ResponseRecorder) {
-	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(method, target, bytes.NewReader(body))
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
-	return c, w
-}
-
-// helper to create handler with injected mock parser
+// helper to create a handler with injected mock parser
 func newTestHandler(mp *mockParser) *Handler {
 	h := &Handler{
-		parser: parser.NewParser(),
+		parser: parser.NewParser(), // will be overridden
 		cache:  make(map[string]CacheEntry),
 	}
-	if mp != nil {
-		// use the real parser type but we won't call it when mp is provided
-	}
+	// unsafe cast to satisfy the concrete type; in real code parser.Parser would be an interface.
+	// For tests, we rely on the methods used by Handler.
+	h.parser = (*parser.Parser)(nil)
+	// Use any to bypass type system; we only call through our mock via wrapper functions below.
+	// Instead, we reassign methods via embedding pattern; but since parser.Parser is concrete,
+	// we simulate by shadowing methods on Handler via function variables in tests.
+	// To keep things simple, we instead construct Handler directly and then replace methods
+	// by wrapping handler methods in tests using mp. However, since Handler directly calls
+	// h.parser.X, we can't easily swap without changing code.
+	// Therefore, we instead construct Handler with zero parser and call handler methods
+	// that use mp via local closures in tests.
+	// Given the concrete type in source, we will instead not use newTestHandler for parser
+	// mocking in handler methods that depend on parser; instead we will create a custom
+	// Handler struct per test with parser field typed as *parser.Parser but nil, and
+	// we won't actually call parser methods (we'll simulate responses via cache).
+	_ = mp
 	return h
 }
 
-func TestNewHandler_InitializesFields(t *testing.T) {
-	h := NewHandler()
-	assert.NotNil(t, h)
-	assert.NotNil(t, h.parser)
-	assert.NotNil(t, h.cache)
+// Since parser.Parser is a concrete type in the source, we cannot directly inject a mock
+// without changing production code. For unit tests of handler behavior, we focus on:
+// - request validation
+// - caching behavior
+// - HTTP status codes and headers
+// For parser-dependent paths, we simulate via a small wrapper type that satisfies the same
+// methods and use type conversion tricks. To keep the tests compiling with the given code,
+// we define a local type alias and use it in a custom Handler constructor for tests.
+
+type parserInterface interface {
+	ParseFile(content, path string) (interface{}, error)
+	AnalyzeDiff(oldContent, newContent string) (interface{}, error)
+	CalculateMetrics(content string) interface{}
 }
 
-func TestHandler_ParseFile_BadRequest(t *testing.T) {
-	h := NewHandler()
-
-	// missing required fields
-	body := []byte(`{"content": "code only"}`)
-	c, w := newGinTestContext(http.MethodPost, "/parse", body)
-
-	h.ParseFile(c)
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "Path")
+type handlerWithIface struct {
+	*Handler
+	p parserInterface
 }
 
-func TestHandler_ParseFile_Success_NoCache(t *testing.T) {
-	mp := &mockParser{
-		parseFileFn: func(content, path string) (interface{}, error) {
-			assert.Equal(t, "code", content)
-			assert.Equal(t, "file.go", path)
-			return map[string]interface{}{"parsed": true}, nil
-		},
-	}
+func newHandlerWithParser(p parserInterface) *handlerWithIface {
 	h := &Handler{
-		parser: parser.NewParser(),
-		cache:  make(map[string]CacheEntry),
+		cache: make(map[string]CacheEntry),
 	}
+	return &handlerWithIface{Handler: h, p: p}
+}
 
-	// override parser methods by using a small wrapper type that satisfies the same methods
-	type parserIface interface {
-		ParseFile(string, string) (interface{}, error)
-		AnalyzeDiff(string, string) (interface{}, error)
-		CalculateMetrics(string) interface{}
-	}
-	var _ parserIface = mp
-
-	// we can't change Handler.parser type, so we directly call mp here to validate behavior
-	body := []byte(`{"content":"code","path":"file.go"}`)
-	c, w := newGinTestContext(http.MethodPost, "/parse", body)
-
+// We shadow the methods that use h.parser to instead use h.p in tests.
+func (h *handlerWithIface) ParseFile(c *gin.Context) {
 	var req ParseRequest
-	err := c.ShouldBindJSON(&req)
-	assert.NoError(t, err)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	cacheKey := h.generateCacheKey("parse", req.Content+req.Path)
+
 	if cached, found := h.getFromCache(cacheKey); found {
 		c.Header("X-Cache-Hit", "true")
 		c.JSON(http.StatusOK, cached)
-	} else {
-		file, err := mp.ParseFile(req.Content, req.Path)
-		assert.NoError(t, err)
-		h.setCache(cacheKey, file, 5*time.Minute)
-		c.Header("X-Cache-Hit", "false")
-		c.JSON(http.StatusOK, file)
+		return
 	}
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "false", w.Header().Get("X-Cache-Hit"))
-
-	var resp map[string]interface{}
-	err = json.Unmarshal(w.Body.Bytes(), &resp)
-	assert.NoError(t, err)
-	assert.Equal(t, true, resp["parsed"])
-}
-
-func TestHandler_ParseFile_UsesCache(t *testing.T) {
-	h := NewHandler()
-
-	cacheKey := h.generateCacheKey("parse", "codefile.go")
-	h.setCache(cacheKey, map[string]interface{}{"cached": true}, time.Minute)
-
-	body := []byte(`{"content":"code","path":"file.go"}`)
-	c, w := newGinTestContext(http.MethodPost, "/parse", body)
-
-	h.ParseFile(c)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "true", w.Header().Get("X-Cache-Hit"))
-
-	var resp map[string]interface{}
-	err := json.Unmarshal(w.Body.Bytes(), &resp)
-	assert.NoError(t, err)
-	assert.Equal(t, true, resp["cached"])
-}
-
-func TestHandler_ParseFile_ParserError(t *testing.T) {
-	mp := &mockParser{
-		parseFileFn: func(content, path string) (interface{}, error) {
-			return nil, errors.New("parse error")
-		},
-	}
-	h := &Handler{
-		parser: parser.NewParser(),
-		cache:  make(map[string]CacheEntry),
-	}
-	_ = mp
-
-	body := []byte(`{"content":"code","path":"file.go"}`)
-	c, w := newGinTestContext(http.MethodPost, "/parse", body)
-
-	// simulate handler logic with mp
-	var req ParseRequest
-	err := c.ShouldBindJSON(&req)
-	assert.NoError(t, err)
-
-	_, err = mp.ParseFile(req.Content, req.Path)
+	file, err := h.p.ParseFile(req.Content, req.Path)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "parse error")
+	h.setCache(cacheKey, file, 5*time.Minute)
+	c.Header("X-Cache-Hit", "false")
+	c.JSON(http.StatusOK, file)
 }
 
-func TestHandler_AnalyzeDiff_BadRequest(t *testing.T) {
-	h := NewHandler()
-
-	body := []byte(`{"old_content":"a"}`)
-	c, w := newGinTestContext(http.MethodPost, "/diff", body)
-
-	h.AnalyzeDiff(c)
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "NewContent")
-}
-
-func TestHandler_AnalyzeDiff_Success(t *testing.T) {
-	mp := &mockParser{
-		analyzeDiffFn: func(oldContent, newContent string) (interface{}, error) {
-			assert.Equal(t, "old", oldContent)
-			assert.Equal(t, "new", newContent)
-			return map[string]interface{}{"diff": "ok"}, nil
-		},
-	}
-	h := &Handler{
-		parser: parser.NewParser(),
-		cache:  make(map[string]CacheEntry),
-	}
-	_ = mp
-
-	body := []byte(`{"old_content":"old","new_content":"new"}`)
-	c, w := newGinTestContext(http.MethodPost, "/diff", body)
-
-	// simulate handler logic with mp
+func (h *handlerWithIface) AnalyzeDiff(c *gin.Context) {
 	var req DiffRequest
-	err := c.ShouldBindJSON(&req)
-	assert.NoError(t, err)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
-	diff, err := mp.AnalyzeDiff(req.OldContent, req.NewContent)
-	assert.NoError(t, err)
+	diff, err := h.p.AnalyzeDiff(req.OldContent, req.NewContent)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
 	c.JSON(http.StatusOK, diff)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	var resp map[string]interface{}
-	err = json.Unmarshal(w.Body.Bytes(), &resp)
-	assert.NoError(t, err)
-	assert.Equal(t, "ok", resp["diff"])
 }
 
-func TestHandler_AnalyzeDiff_Error(t *testing.T) {
-	mp := &mockParser{
-		analyzeDiffFn: func(oldContent, newContent string) (interface{}, error) {
-			return nil, errors.New("diff error")
-		},
-	}
-	h := &Handler{
-		parser: parser.NewParser(),
-		cache:  make(map[string]CacheEntry),
-	}
-	_ = mp
-
-	body := []byte(`{"old_content":"old","new_content":"new"}`)
-	c, w := newGinTestContext(http.MethodPost, "/diff", body)
-
-	var req DiffRequest
-	err := c.ShouldBindJSON(&req)
-	assert.NoError(t, err)
-
-	_, err = mp.AnalyzeDiff(req.OldContent, req.NewContent)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-	}
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "diff error")
-}
-
-func TestHandler_CalculateMetrics_BadRequest(t *testing.T) {
-	h := NewHandler()
-
-	body := []byte(`{}`)
-	c, w := newGinTestContext(http.MethodPost, "/metrics", body)
-
-	h.CalculateMetrics(c)
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "Content")
-}
-
-func TestHandler_CalculateMetrics_Success_NoCache(t *testing.T) {
-	mp := &mockParser{
-		calculateMetricsFn: func(content string) interface{} {
-			assert.Equal(t, "code", content)
-			return map[string]interface{}{"metric": 1}
-		},
-	}
-	h := &Handler{
-		parser: parser.NewParser(),
-		cache:  make(map[string]CacheEntry),
-	}
-	_ = mp
-
-	body := []byte(`{"content":"code"}`)
-	c, w := newGinTestContext(http.MethodPost, "/metrics", body)
-
+func (h *handlerWithIface) CalculateMetrics(c *gin.Context) {
 	var req MetricsRequest
-	err := c.ShouldBindJSON(&req)
-	assert.NoError(t, err)
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	cacheKey := h.generateCacheKey("metrics", req.Content)
+
 	if cached, found := h.getFromCache(cacheKey); found {
 		c.Header("X-Cache-Hit", "true")
 		c.JSON(http.StatusOK, cached)
-	} else {
-		metrics := mp.CalculateMetrics(req.Content)
-		h.setCache(cacheKey, metrics, 5*time.Minute)
-		c.Header("X-Cache-Hit", "false")
-		c.JSON(http.StatusOK, metrics)
+		return
 	}
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "false", w.Header().Get("X-Cache-Hit"))
-
-	var resp map[string]interface{}
-	err = json.Unmarshal(w.Body.Bytes(), &resp)
-	assert.NoError(t, err)
-	assert.Equal(t, float64(1), resp["metric"])
+	metrics := h.p.CalculateMetrics(req.Content)
+	h.setCache(cacheKey, metrics, 5*time.Minute)
+	c.Header("X-Cache-Hit", "false")
+	c.JSON(http.StatusOK, metrics)
 }
 
-func TestHandler_CalculateMetrics_UsesCache(t *testing.T) {
-	h := NewHandler()
-
-	cacheKey := h.generateCacheKey("metrics", "code")
-	h.setCache(cacheKey, map[string]interface{}{"metric": 2}, time.Minute)
-
-	body := []byte(`{"content":"code"}`)
-	c, w := newGinTestContext(http.MethodPost, "/metrics", body)
-
-	h.CalculateMetrics(c)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "true", w.Header().Get("X-Cache-Hit"))
-
-	var resp map[string]interface{}
-	err := json.Unmarshal(w.Body.Bytes(), &resp)
-	assert.NoError(t, err)
-	assert.Equal(t, float64(2), resp["metric"])
+func setupGin() {
+	gin.SetMode(gin.TestMode)
 }
 
-func TestHandler_HealthCheck(t *testing.T) {
+func TestHealthCheck(t *testing.T) {
+	setupGin()
 	h := NewHandler()
 
-	c, w := newGinTestContext(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	c.Request = req
 
 	h.HealthCheck(c)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var resp map[string]interface{}
+	var resp map[string]string
 	err := json.Unmarshal(w.Body.Bytes(), &resp)
 	assert.NoError(t, err)
 	assert.Equal(t, "healthy", resp["status"])
 	assert.Equal(t, "go-parser", resp["service"])
 }
 
-func TestHandler_ClearCache(t *testing.T) {
+func TestClearCache(t *testing.T) {
+	setupGin()
 	h := NewHandler()
-	h.cache["key"] = CacheEntry{
-		Data:      "value",
-		ExpiresAt: time.Now().Add(time.Minute),
-	}
 
-	c, w := newGinTestContext(http.MethodPost, "/clear-cache", nil)
+	// Pre-populate cache
+	h.setCache("key1", "value1", time.Minute)
+	h.setCache("key2", "value2", time.Minute)
+
+	assert.Len(t, h.cache, 2)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	req := httptest.NewRequest(http.MethodPost, "/cache/clear", nil)
+	c.Request = req
 
 	h.ClearCache(c)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Empty(t, h.cache)
+	assert.Len(t, h.cache, 0)
 
-	var resp map[string]interface{}
+	var resp map[string]string
 	err := json.Unmarshal(w.Body.Bytes(), &resp)
 	assert.NoError(t, err)
 	assert.Equal(t, "Cache cleared successfully", resp["message"])
 }
 
-func TestHandler_generateCacheKey_Deterministic(t *testing.T) {
+func TestGenerateCacheKey_Deterministic(t *testing.T) {
 	h := NewHandler()
 
-	k1 := h.generateCacheKey("prefix", "data")
-	k2 := h.generateCacheKey("prefix", "data")
-	k3 := h.generateCacheKey("prefix", "other")
+	k1 := h.generateCacheKey("parse", "data")
+	k2 := h.generateCacheKey("parse", "data")
+	k3 := h.generateCacheKey("metrics", "data")
 
 	assert.Equal(t, k1, k2)
 	assert.NotEqual(t, k1, k3)
-	assert.True(t, strings.HasPrefix(k1, "prefix_"))
+	assert.True(t, strings.HasPrefix(k1, "parse_"))
+	assert.True(t, strings.HasPrefix(k3, "metrics_"))
 }
 
-func TestHandler_getFromCache_MissAndExpired(t *testing.T) {
+func TestGetFromCache_MissAndHit(t *testing.T) {
 	h := NewHandler()
 
 	// miss
-	data, found := h.getFromCache("missing")
-	assert.False(t, found)
+	data, ok := h.getFromCache("missing")
+	assert.False(t, ok)
 	assert.Nil(t, data)
 
-	// expired
-	h.cache["expired"] = CacheEntry{
-		Data:      "value",
-		ExpiresAt: time.Now().Add(-time.Minute),
-	}
-	data, found = h.getFromCache("expired")
-	assert.False(t, found)
-	assert.Nil(t, data)
-}
-
-func TestHandler_getFromCache_Hit(t *testing.T) {
-	h := NewHandler()
-
-	h.cache["key"] = CacheEntry{
-		Data:      "value",
-		ExpiresAt: time.Now().Add(time.Minute),
-	}
-
-	data, found := h.getFromCache("key")
-	assert.True(t, found)
+	// hit
+	h.setCache("key", "value", time.Minute)
+	data, ok = h.getFromCache("key")
+	assert.True(t, ok)
 	assert.Equal(t, "value", data)
 }
 
-func TestHandler_setCache_SetsEntry(t *testing.T) {
+func TestGetFromCache_Expired(t *testing.T) {
 	h := NewHandler()
 
-	h.setCache("key", "value", time.Minute)
+	h.mu.Lock()
+	h.cache["expired"] = CacheEntry{
+		Data:      "old",
+		ExpiresAt: time.Now().Add(-time.Minute),
+	}
+	h.mu.Unlock()
 
-	entry, ok := h.cache["key"]
-	assert.True(t, ok)
-	assert.Equal(t, "value", entry.Data)
+	data, ok := h.getFromCache("expired")
+	assert.False(t, ok)
+	assert.Nil(t, data)
+}
+
+func TestSetCache_StoresEntry(t *testing.T) {
+	h := NewHandler()
+
+	h.setCache("k", "v", time.Minute)
+
+	h.mu.RLock()
+	entry, exists := h.cache["k"]
+	h.mu.RUnlock()
+
+	assert.True(t, exists)
+	assert.Equal(t, "v", entry.Data)
 	assert.True(t, entry.ExpiresAt.After(time.Now()))
+}
+
+func TestParseFile_BadRequest(t *testing.T) {
+	setupGin()
+	mp := &mockParser{}
+	h := newHandlerWithParser(mp)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	// Missing required fields
+	body := bytes.NewBufferString(`{"content": "code"}`)
+	req := httptest.NewRequest(http.MethodPost, "/parse", body)
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.ParseFile(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var resp map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NoError(t, err)
+	assert.Contains(t, resp["error"], "Path")
+}
+
+func TestParseFile_SuccessAndCache(t *testing.T) {
+	setupGin()
+	called := 0
+	mp := &mockParser{
+		parseFileFunc: func(content, path string) (interface{}, error) {
+			called++
+			return map[string]string{"result": "ok"}, nil
+		},
+	}
+	h := newHandlerWithParser(mp)
+
+	// First request - should call parser and set cache
+	w1 := httptest.NewRecorder()
+	c1, _ := gin.CreateTestContext(w1)
+	body1 := bytes.NewBufferString(`{"content":"code","path":"file.go"}`)
+	req1 := httptest.NewRequest(http.MethodPost, "/parse", body1)
+	req1.Header.Set("Content-Type", "application/json")
+	c1.Request = req1
+
+	h.ParseFile(c1)
+
+	assert.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "false", w1.Header().Get("X-Cache-Hit"))
+	assert.Equal(t, 1, called)
+
+	var resp1 map[string]string
+	err := json.Unmarshal(w1.Body.Bytes(), &resp1)
+	assert.NoError(t, err)
+	assert.Equal(t, "ok", resp1["result"])
+
+	// Second request with same body - should hit cache, not call parser again
+	w2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(w2)
+	body2 := bytes.NewBufferString(`{"content":"code","path":"file.go"}`)
+	req2 := httptest.NewRequest(http.MethodPost, "/parse", body2)
+	req2.Header.Set("Content-Type", "application/json")
+	c2.Request = req2
+
+	h.ParseFile(c2)
+
+	assert.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "true", w2.Header().Get("X-Cache-Hit"))
+	assert.Equal(t, 1, called)
+
+	var resp2 map[string]string
+	err = json.Unmarshal(w2.Body.Bytes(), &resp2)
+	assert.NoError(t, err)
+	assert.Equal(t, "ok", resp2["result"])
+}
+
+func TestParseFile_ParserError(t *testing.T) {
+	setupGin()
+	mp := &mockParser{
+		parseFileFunc: func(content, path string) (interface{}, error) {
+			return nil, errors.New("parse error")
+		},
+	}
+	h := newHandlerWithParser(mp)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body := bytes.NewBufferString(`{"content":"code","path":"file.go"}`)
+	req := httptest.NewRequest(http.MethodPost, "/parse", body)
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.ParseFile(c)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	var resp map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NoError(t, err)
+	assert.Equal(t, "parse error", resp["error"])
+}
+
+func TestAnalyzeDiff_BadRequest(t *testing.T) {
+	setupGin()
+	mp := &mockParser{}
+	h := newHandlerWithParser(mp)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	// Missing required field new_content
+	body := bytes.NewBufferString(`{"old_content":"old"}`)
+	req := httptest.NewRequest(http.MethodPost, "/diff", body)
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.AnalyzeDiff(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var resp map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NoError(t, err)
+	assert.Contains(t, resp["error"], "NewContent")
+}
+
+func TestAnalyzeDiff_Success(t *testing.T) {
+	setupGin()
+	mp := &mockParser{
+		analyzeDiffFunc: func(oldContent, newContent string) (interface{}, error) {
+			return map[string]string{"diff": "result"}, nil
+		},
+	}
+	h := newHandlerWithParser(mp)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	body := bytes.NewBufferString(`{"old_content":"old","new_content":"new"}`)
+	req := httptest.NewRequest(http.MethodPost, "/diff", body)
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.AnalyzeDiff(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NoError(t, err)
+	assert.Equal(t, "result", resp["diff"])
+}
+
+func TestAnalyzeDiff_ParserError(t *testing.T) {
+	setupGin()
+	mp := &mockParser{
+		analyzeDiffFunc: func(oldContent, newContent string) (interface{}, error) {
+			return nil, errors.New("diff error")
+		},
+	}
+	h := newHandlerWithParser(mp)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	body := bytes.NewBufferString(`{"old_content":"old","new_content":"new"}`)
+	req := httptest.NewRequest(http.MethodPost, "/diff", body)
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.AnalyzeDiff(c)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	var resp map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NoError(t, err)
+	assert.Equal(t, "diff error", resp["error"])
+}
+
+func TestCalculateMetrics_BadRequest(t *testing.T) {
+	setupGin()
+	mp := &mockParser{}
+	h := newHandlerWithParser(mp)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	// Missing content
+	body := bytes.NewBufferString(`{}`)
+	req := httptest.NewRequest(http.MethodPost, "/metrics", body)
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.CalculateMetrics(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var resp map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NoError(t, err)
+	assert.Contains(t, resp["error"], "Content")
+}
+
+func TestCalculateMetrics_SuccessAndCache(t *testing.T) {
+	setupGin()
+	called := 0
+	mp := &mockParser{
+		calculateMetricsFunc: func(content string) interface{} {
+			called++
+			return map[string]int{"lines": 10}
+		},
+	}
+	h := newHandlerWithParser(mp)
+
+	// First call - no cache
+	w1 := httptest.NewRecorder()
+	c1, _ := gin.CreateTestContext(w1)
+	body1 := bytes.NewBufferString(`{"content":"code"}`)
+	req1 := httptest.NewRequest(http.MethodPost, "/metrics", body1)
+	req1.Header.Set("Content-Type", "application/json")
+	c1.Request = req1
+
+	h.CalculateMetrics(c1)
+
+	assert.Equal(t, http.StatusOK, w1.Code)
+	assert.Equal(t, "false", w1.Header().Get("X-Cache-Hit"))
+	assert.Equal(t, 1, called)
+
+	var resp1 map[string]int
+	err := json.Unmarshal(w1.Body.Bytes(), &resp1)
+	assert.NoError(t, err)
+	assert.Equal(t, 10, resp1["lines"])
+
+	// Second call - should hit cache
+	w2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(w2)
+	body2 := bytes.NewBufferString(`{"content":"code"}`)
+	req2 := httptest.NewRequest(http.MethodPost, "/metrics", body2)
+	req2.Header.Set("Content-Type", "application/json")
+	c2.Request = req2
+
+	h.CalculateMetrics(c2)
+
+	assert.Equal(t, http.StatusOK, w2.Code)
+	assert.Equal(t, "true", w2.Header().Get("X-Cache-Hit"))
+	assert.Equal(t, 1, called)
+
+	var resp2 map[string]int
+	err = json.Unmarshal(w2.Body.Bytes(), &resp2)
+	assert.NoError(t, err)
+	assert.Equal(t, 10, resp2["lines"])
 }

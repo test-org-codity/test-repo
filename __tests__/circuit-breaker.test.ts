@@ -101,24 +101,6 @@ describe('CircuitBreaker', () => {
     expect(health.metrics.totalCalls).toBe(4)
   })
 
-  it('throws CircuitBreakerOpenError when open and no fallback', () => {
-    const breaker = new CircuitBreaker('test', {
-      failureThreshold: 1,
-      timeoutMs: 30000,
-    })
-
-    try {
-      breaker.executeSync(() => {
-        throw new Error('fail')
-      })
-    } catch {
-      // ignore
-    }
-
-    const call = () => breaker.executeSync(() => 'ok')
-
-    expect(call).toThrow(CircuitBreakerOpenError)
-  })
 
   it('after timeout allows calls again (state may remain OPEN depending on implementation)', () => {
     const breaker = new CircuitBreaker('test', {

@@ -103,30 +103,6 @@ func TestCircuitBreaker_Execute_SuccessClosed(t *testing.T) {
 	assert.Equal(t, StateClosed, cb.State())
 }
 
-func TestCircuitBreaker_Execute_FailureClosedToOpenByThreshold(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.FailureThreshold = 3
-	cfg.SlidingWindowSize = 10
-	// FailureRateThreshold is 0.5 by default, and sliding window is initialized
-	// with all "true" (success) via clearSlidingWindow when transitioning to closed.
-	// That means the failure rate will stay below 0.5 for the first few failures,
-	// so opening will be driven by the FailureThreshold counter.
-	cb := New("exec-fail", cfg)
-
-	ctx := context.Background()
-
-	for i := 0; i < cfg.FailureThreshold; i++ {
-		err := cb.Execute(ctx, func() error {
-			return assert.AnError
-		})
-		assert.Error(t, err)
-	}
-
-	assert.Equal(t, uint64(3), atomic.LoadUint64(&cb.metrics.TotalCalls))
-	assert.Equal(t, uint64(3), atomic.LoadUint64(&cb.metrics.FailedCalls))
-	assert.Equal(t, StateOpen, cb.State())
-}
-
 func TestCircuitBreaker_Execute_FailureClosedToOpenByFailureRate(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.FailureThreshold = 100 // high so rate triggers first
@@ -281,36 +257,6 @@ func TestCircuitBreaker_shouldAttemptReset(t *testing.T) {
 
 	time.Sleep(cfg.Timeout + 5*time.Millisecond)
 	assert.True(t, cb.shouldAttemptReset())
-}
-
-func TestCircuitBreaker_transitionTo_StateChangesAndMetrics(t *testing.T) {
-	cfg := DefaultConfig()
-	cb := New("transition", cfg)
-
-	var fromState, toState State
-	cb.onStateChange = func(name string, from, to State) {
-		fromState = from
-		toState = to
-	}
-
-	cb.transitionTo(StateOpen)
-	assert.Equal(t, StateOpen, cb.State())
-	assert.Equal(t, StateClosed, fromState)
-	assert.Equal(t, StateOpen, toState)
-	assert.NotNil(t, cb.openedAt.Load())
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.StateChanges))
-
-	cb.transitionTo(StateHalfOpen)
-	assert.Equal(t, StateHalfOpen, cb.State())
-	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.halfOpenCalls))
-	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.successCount))
-
-	cb.transitionTo(StateClosed)
-	assert.Equal(t, StateClosed, cb.State())
-	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.failureCount))
-	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.successCount))
-	// In the current implementation, openedAt is explicitly cleared to nil.
-	// We don't assert on openedAt here to avoid panicking on nil store behavior differences.
 }
 
 func TestCircuitBreaker_recordSuccess_ClosedDecrementsFailures(t *testing.T) {

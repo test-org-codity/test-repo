@@ -274,6 +274,7 @@ func TestCircuitBreaker_transitionTo_Closed_ResetsFailureAndWindow(t *testing.T)
 	cb.slidingWindow[2] = false
 	cb.windowIndex = 2
 
+	cb.transitionTo(StateOpen)
 	cb.transitionTo(StateClosed)
 
 	assert.Equal(t, StateClosed, cb.State())

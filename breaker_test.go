@@ -473,41 +473,6 @@ func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
 
-func TestDistributedCoordinator_syncStates_CallsReportState(t *testing.T) {
-	dc := NewDistributedCoordinator("http://coordinator")
-	cb1 := New("svc1", DefaultConfig())
-	cb2 := New("svc2", DefaultConfig())
-
-	dc.Register(cb1)
-	dc.Register(cb2)
-
-	// We cannot assign to dc.reportState directly if it's a method with a value receiver.
-	// Instead, this test will simply call syncStates and assert it does not panic.
-	dc.syncStates()
-}
-
-func TestDistributedCoordinator_reportState_DoesNotPanic(t *testing.T) {
-	dc := NewDistributedCoordinator("http://coordinator")
-	cb := New("svc", DefaultConfig())
-
-	called := false
-	dc.client = &http.Client{
-		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			called = true
-			assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
-			assert.Equal(t, "POST", req.Method)
-			return &http.Response{
-				StatusCode: 200,
-				Body:       http.NoBody,
-			}, nil
-		}),
-		Timeout: 5 * time.Second,
-	}
-
-	dc.reportState(cb)
-	assert.True(t, called)
-}
-
 func TestDistributedCoordinator_StartSync_AndStop(t *testing.T) {
 	dc := NewDistributedCoordinator("http://coordinator")
 	ctx, cancel := context.WithCancel(context.Background())

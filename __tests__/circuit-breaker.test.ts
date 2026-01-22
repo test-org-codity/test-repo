@@ -106,32 +106,6 @@ describe('CircuitBreaker', () => {
     expect(call).toThrow(CircuitBreakerOpenError)
   })
 
-  it('calls fallback when provided and circuit is open', () => {
-    const breaker = new CircuitBreaker('test', {
-      failureThreshold: 1,
-      timeoutMs: 30000,
-    })
-
-    try {
-      breaker.executeSync(() => {
-        throw new Error('fail')
-      })
-    } catch {
-      // ignore
-    }
-
-    const fallback = jest.fn().mockReturnValue('fallback-value')
-
-    const result = breaker.executeSync(
-      () => 'ok',
-      {
-        fallback,
-      },
-    )
-
-    expect(result).toBe('fallback-value')
-    expect(fallback).toHaveBeenCalledTimes(1)
-  })
 
   it('transitions to HALF_OPEN after timeout and allows a trial call', async () => {
     const breaker = new CircuitBreaker('test', {

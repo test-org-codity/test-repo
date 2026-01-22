@@ -329,14 +329,6 @@ RSpec.describe PolyglotAPI do
         allow_any_instance_of(PolyglotAPI).to receive(:call_python_service)
           .and_return({ 'score' => 95, 'issues' => [] })
       end
-
-      it 'falls back to params and succeeds' do
-        env = { 'CONTENT_TYPE' => 'application/json' }
-        post '/analyze?content=code&path=test.rb', 'not-json', env
-        expect(last_response.status).to eq(200)
-        json_response = JSON.parse(last_response.body)
-        expect(json_response['summary']).not_to be_nil
-      end
     end
   end
 

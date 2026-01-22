@@ -56,7 +56,8 @@ type handlerWithMockParser struct {
 
 func newHandlerWithMock(p testParserInterface) *handlerWithMockParser {
 	h := &Handler{
-		cache: make(map[string]CacheEntry),
+		parser: parser.NewParser(),
+		cache:  make(map[string]CacheEntry),
 	}
 	return &handlerWithMockParser{
 		Handler: h,
@@ -354,7 +355,8 @@ func TestHealthCheck(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	h := &Handler{
-		cache: make(map[string]CacheEntry),
+		parser: parser.NewParser(),
+		cache:  make(map[string]CacheEntry),
 	}
 
 	w := httptest.NewRecorder()
@@ -374,7 +376,8 @@ func TestHealthCheck(t *testing.T) {
 
 func TestGenerateCacheKey_DeterministicAndDifferentPrefixes(t *testing.T) {
 	h := &Handler{
-		cache: make(map[string]CacheEntry),
+		parser: parser.NewParser(),
+		cache:  make(map[string]CacheEntry),
 	}
 
 	key1 := h.generateCacheKey("parse", "data")
@@ -389,7 +392,8 @@ func TestGenerateCacheKey_DeterministicAndDifferentPrefixes(t *testing.T) {
 
 func TestGetFromCache_ExpiredAndNonexistent(t *testing.T) {
 	h := &Handler{
-		cache: make(map[string]CacheEntry),
+		parser: parser.NewParser(),
+		cache:  make(map[string]CacheEntry),
 	}
 
 	data, ok := h.getFromCache("missing")
@@ -417,7 +421,8 @@ func TestGetFromCache_ExpiredAndNonexistent(t *testing.T) {
 
 func TestSetCache_StoresValue(t *testing.T) {
 	h := &Handler{
-		cache: make(map[string]CacheEntry),
+		parser: parser.NewParser(),
+		cache:  make(map[string]CacheEntry),
 	}
 
 	h.setCache("key", "val", time.Minute)
@@ -435,7 +440,8 @@ func TestClearCache_Handler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	h := &Handler{
-		cache: make(map[string]CacheEntry),
+		parser: parser.NewParser(),
+		cache:  make(map[string]CacheEntry),
 	}
 	h.cache["k1"] = CacheEntry{Data: "v1", ExpiresAt: time.Now().Add(time.Minute)}
 

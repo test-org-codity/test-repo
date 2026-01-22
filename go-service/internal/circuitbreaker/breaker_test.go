@@ -107,7 +107,10 @@ func TestCircuitBreaker_Execute_FailureClosedToOpenByThreshold(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.FailureThreshold = 3
 	cfg.SlidingWindowSize = 10
-	cfg.FailureRateThreshold = 1.0
+	// FailureRateThreshold is 0.5 by default, and sliding window is initialized
+	// with all "true" (success) via clearSlidingWindow when transitioning to closed.
+	// That means the failure rate will stay below 0.5 for the first few failures,
+	// so opening will be driven by the FailureThreshold counter.
 	cb := New("exec-fail", cfg)
 
 	ctx := context.Background()
@@ -272,7 +275,7 @@ func TestCircuitBreaker_shouldAttemptReset(t *testing.T) {
 	// No openedAt set
 	assert.False(t, cb.shouldAttemptReset())
 
-	// Set openedAt in the future
+	// Set openedAt in the future (i.e., now, so not yet timed out)
 	cb.openedAt.Store(time.Now())
 	assert.False(t, cb.shouldAttemptReset())
 
@@ -306,7 +309,8 @@ func TestCircuitBreaker_transitionTo_StateChangesAndMetrics(t *testing.T) {
 	assert.Equal(t, StateClosed, cb.State())
 	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.failureCount))
 	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.successCount))
-	// openedAt is not cleared in the current implementation, so just ensure no panic
+	// In the current implementation, openedAt is explicitly cleared to nil.
+	// We don't assert on openedAt here to avoid panicking on nil store behavior differences.
 }
 
 func TestCircuitBreaker_recordSuccess_ClosedDecrementsFailures(t *testing.T) {

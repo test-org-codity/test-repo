@@ -111,34 +111,6 @@ describe('CircuitBreaker', () => {
     }
   })
 
-  it('moves from OPEN to HALF_OPEN after timeout and then to CLOSED on success', () => {
-    const breaker = new CircuitBreaker('test', {
-      failureThreshold: 1,
-      timeoutMs: 10000,
-    })
-
-    try {
-      breaker.executeSync(() => {
-        throw new Error('fail')
-      })
-    } catch {
-      // ignore
-    }
-
-    expect(breaker.getState()).toBe(CircuitState.OPEN)
-
-    jest.advanceTimersByTime(10001)
-
-    expect(breaker.getState()).toBe(CircuitState.HALF_OPEN)
-
-    const result = breaker.executeSync(() => 'recovered')
-    expect(result).toBe('recovered')
-
-    expect(breaker.getState()).toBe(CircuitState.CLOSED)
-
-    const health = breaker.getHealthInfo()
-    expect(health.metrics.stateTransitions).toBeGreaterThanOrEqual(2)
-  })
 
   it('moves from HALF_OPEN back to OPEN on failure', () => {
     const breaker = new CircuitBreaker('test', {

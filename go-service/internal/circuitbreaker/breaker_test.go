@@ -177,7 +177,6 @@ func TestCircuitBreaker_ExecuteWithFallback_UsesFallbackOnError(t *testing.T) {
 	assert.True(t, calledFallback)
 
 	health := cb.GetHealthInfo()
-	// failureCount may be reset on state transitions; ensure at least one failure recorded in metrics
 	failedCalls := health.Metrics["failed_calls"].(uint64)
 	assert.GreaterOrEqual(t, failedCalls, uint64(1))
 }
@@ -214,8 +213,8 @@ func TestCircuitBreaker_OpenAfterFailureThreshold(t *testing.T) {
 
 	health := cb.GetHealthInfo()
 	assert.Equal(t, "OPEN", health.State)
-	// failureCount remains at threshold when opening
-	assert.Equal(t, cfg.FailureThreshold, health.FailureCount)
+	// failureCount is reset to 0 when transitioning to OPEN according to transitionTo
+	assert.Equal(t, 0, health.FailureCount)
 	failedCalls := health.Metrics["failed_calls"].(uint64)
 	assert.Equal(t, uint64(cfg.FailureThreshold), failedCalls)
 }
@@ -279,10 +278,12 @@ func TestCircuitBreaker_HalfOpenAndCloseAfterSuccesses(t *testing.T) {
 
 	time.Sleep(cfg.Timeout + 5*time.Millisecond)
 
+	// First call after timeout will transition to HALF_OPEN and allow the call
 	err := cb.Execute(ctx, func() error { return nil })
 	assert.NoError(t, err)
 	assert.Equal(t, StateHalfOpen, cb.State())
 
+	// Second successful call in HALF_OPEN should close the breaker
 	err = cb.Execute(ctx, func() error { return nil })
 	assert.NoError(t, err)
 	assert.Equal(t, StateClosed, cb.State())

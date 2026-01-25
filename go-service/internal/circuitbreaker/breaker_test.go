@@ -200,21 +200,22 @@ func TestCircuitBreaker_GetHealthInfo(t *testing.T) {
 	cfg.SlidingWindowSize = 4
 	cb := New("health-check", cfg)
 
-	// Prepare sliding window: 2 failures, 2 successes -> failure rate 0.5
+	// Prepare sliding window: 2 failures, 2 successes -> failure rate initially 0.5
 	cb.clearSlidingWindow()
 	cb.addToSlidingWindow(false)
 	cb.addToSlidingWindow(false)
 	cb.addToSlidingWindow(true)
 	cb.addToSlidingWindow(true)
 
-	// Add some response times: average should be 20ms
+	// Add some response times and update sliding window positions
 	cb.recordSuccess(10 * time.Millisecond)
 	cb.recordFailure(30 * time.Millisecond)
 
 	hi := cb.GetHealthInfo()
 	assert.Equal(t, "health-check", hi.Name)
 	assert.Equal(t, "CLOSED", hi.State)
-	assert.Equal(t, 0.5, hi.FailureRate)
+	// After the above operations, the sliding window reflects 1 failure out of 4 => 0.25
+	assert.Equal(t, 0.25, hi.FailureRate)
 
 	// Metrics presence and types
 	if v, ok := hi.Metrics["total_calls"].(uint64); ok {

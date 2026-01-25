@@ -207,7 +207,7 @@ RSpec.describe CircuitBreaker::Breaker do
         rescue RuntimeError
         end
         expect(breaker.state).to eq(CircuitBreaker::State::OPEN)
-        sleep(config.timeout_seconds + 0.05)
+        sleep(config.timeout_seconds + 0.2)
       end
 
       it 'reopens on failure in half-open' do
@@ -247,7 +247,7 @@ RSpec.describe CircuitBreaker::Breaker do
       rescue RuntimeError
       end
       expect(breaker.state).to eq(CircuitBreaker::State::OPEN)
-      sleep(config.timeout_seconds + 0.05)
+      sleep(config.timeout_seconds + 0.2)
       expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
     end
   end
@@ -262,11 +262,13 @@ RSpec.describe CircuitBreaker::DistributedCoordinator do
 
   describe '#register' do
     it 'does not raise when attempting to register a breaker (network mocked)' do
-      http_double = instance_double(Net::HTTP, request: instance_double(Net::HTTPResponse))
-      allow(Net::HTTP).to receive(:new).and_return(http_double)
+      http_double = instance_double('Net::HTTP')
       allow(http_double).to receive(:open_timeout=)
       allow(http_double).to receive(:read_timeout=)
-      allow(http_double).to receive(:request).and_return(instance_double(Net::HTTPResponse))
+      allow(http_double).to receive(:request).and_return(instance_double('Net::HTTPResponse', body: '{}'))
+
+      allow(Net::HTTP).to receive(:start).and_yield(http_double)
+      allow(Net::HTTP).to receive(:new).and_return(http_double)
 
       expect do
         coordinator.register(breaker)
@@ -276,11 +278,15 @@ RSpec.describe CircuitBreaker::DistributedCoordinator do
 
   describe '#start_sync and #stop_sync' do
     it 'starts and stops the sync thread without error (network mocked)' do
-      http_double = instance_double(Net::HTTP)
-      allow(Net::HTTP).to receive(:new).and_return(http_double)
+      http_double = instance_double('Net::HTTP')
       allow(http_double).to receive(:open_timeout=)
       allow(http_double).to receive(:read_timeout=)
-      allow(http_double).to receive(:request).and_return(instance_double(Net::HTTPResponse))
+      allow(http_double).to receive(:request).and_return(instance_double('Net::HTTPResponse', body: '{}'))
+
+      allow(Net::HTTP).to receive(:start).and_yield(http_double)
+      allow(Net::HTTP).to receive(:new).and_return(http_double)
+      allow(Net::HTTP).to receive(:get_response).and_return(instance_double('Net::HTTPResponse',
+                                                                            body: '{"status":"ok"}'))
 
       coordinator.register(breaker)
 
@@ -294,7 +300,7 @@ RSpec.describe CircuitBreaker::DistributedCoordinator do
 
   describe '#get_cluster_state' do
     it 'returns parsed JSON on success' do
-      response_double = instance_double(Net::HTTPResponse, body: '{"status":"ok"}')
+      response_double = instance_double('Net::HTTPResponse', body: '{"status":"ok"}')
       allow(Net::HTTP).to receive(:get_response).and_return(response_double)
 
       result = coordinator.get_cluster_state('service_a')

@@ -1,9 +1,9 @@
-import { jest } from '@jest/globals'
+import { jest, describe, it, expect } from '@jest/globals'
 
 jest.mock('date-fns', () => ({
   ...jest.requireActual('date-fns'),
-  format: jest.fn(() => '2024-01-01'),
-  subMonths: jest.fn(() => new Date('2024-01-01')),
+  format: jest.fn((date: Date, fmt: string) => '2024-01-01'),
+  subMonths: jest.fn((date: Date, n: number) => new Date('2024-01-01')),
 }))
 
 jest.mock('react-use', () => ({
@@ -43,25 +43,24 @@ jest.mock('@/config/redis', () => {
 import { format, subMonths } from 'date-fns'
 import { useMedia } from 'react-use'
 import { getRedisClient } from '@/config/redis'
-import { describe, it, expect } from '@jest/globals'
 
 describe('external dependency mocks behave deterministically', () => {
   it('date-fns: format returns a fixed string', () => {
     const result = format(new Date('1999-12-31'), 'yyyy-MM-dd')
     expect(result).toBe('2024-01-01')
-    expect((format as unknown as jest.Mock).mock.calls.length).toBeGreaterThan(0)
+    expect((format as any).mock.calls.length).toBeGreaterThan(0)
   })
 
   it('date-fns: subMonths returns a fixed date', () => {
     const result = subMonths(new Date('2024-02-15'), 1)
     expect(result).toEqual(new Date('2024-01-01'))
-    expect((subMonths as unknown as jest.Mock).mock.calls.length).toBeGreaterThan(0)
+    expect((subMonths as any).mock.calls.length).toBeGreaterThan(0)
   })
 
   it('react-use: useMedia returns false', () => {
     const val = (useMedia as unknown as () => boolean)()
     expect(val).toBe(false)
-    expect((useMedia as unknown as jest.Mock).mock.calls.length).toBeGreaterThan(0)
+    expect((useMedia as any).mock.calls.length).toBeGreaterThan(0)
   })
 })
 
@@ -78,9 +77,9 @@ describe('redis client behavior (mocked)', () => {
     await expect(client.get(key)).resolves.toBeNull()
     await expect(client.quit()).resolves.toBe('OK')
 
-    expect((client.get as jest.Mock).mock.calls.length).toBeGreaterThan(0)
-    expect((client.set as jest.Mock).mock.calls.length).toBeGreaterThan(0)
-    expect((client.del as jest.Mock).mock.calls.length).toBeGreaterThan(0)
-    expect((client.quit as jest.Mock).mock.calls.length).toBeGreaterThan(0)
+    expect((client.get as any).mock.calls.length).toBeGreaterThan(0)
+    expect((client.set as any).mock.calls.length).toBeGreaterThan(0)
+    expect((client.del as any).mock.calls.length).toBeGreaterThan(0)
+    expect((client.quit as any).mock.calls.length).toBeGreaterThan(0)
   })
 })

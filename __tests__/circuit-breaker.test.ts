@@ -5,7 +5,7 @@ import {
   CircuitState,
   DistributedCircuitBreakerClient,
   withCircuitBreaker,
-} from '@/app/circuit-breaker'
+} from './circuit-breaker.test'
 
 jest.mock('@/app/circuit-breaker', () => {
   const actual = jest.requireActual('@/app/circuit-breaker')

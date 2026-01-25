@@ -126,7 +126,8 @@ func TestCircuitBreaker_Execute_Failure(t *testing.T) {
 	health := cb.GetHealthInfo()
 	assert.Equal(t, "exec-failure", health.Name)
 	assert.Equal(t, "CLOSED", health.State)
-	// failureCount is reset to 0 when transitioning to open; rely on metrics instead
+	// failureCount is incremented on each failure while closed
+	assert.Equal(t, 1, health.FailureCount)
 	totalCalls := health.Metrics["total_calls"].(uint64)
 	successfulCalls := health.Metrics["successful_calls"].(uint64)
 	failedCalls := health.Metrics["failed_calls"].(uint64)
@@ -213,7 +214,8 @@ func TestCircuitBreaker_OpenAfterFailureThreshold(t *testing.T) {
 
 	health := cb.GetHealthInfo()
 	assert.Equal(t, "OPEN", health.State)
-	// failureCount is reset when opening; check failed_calls metric instead
+	// failureCount remains at threshold when opening
+	assert.Equal(t, cfg.FailureThreshold, health.FailureCount)
 	failedCalls := health.Metrics["failed_calls"].(uint64)
 	assert.Equal(t, uint64(cfg.FailureThreshold), failedCalls)
 }
@@ -652,8 +654,7 @@ func TestCircuitBreaker_HealthInfoFailureAndSuccessCounts(t *testing.T) {
 	_ = cb.Execute(ctx, func() error { return assert.AnError })
 
 	health := cb.GetHealthInfo()
-	// failureCount may be adjusted by state transitions; ensure at least one failure recorded in metrics
-	failedCalls := health.Metrics["failed_calls"].(uint64)
-	assert.GreaterOrEqual(t, failedCalls, uint64(1))
+	// failureCount reflects current internal counter
+	assert.Equal(t, int(atomic.LoadInt32(&cb.failureCount)), health.FailureCount)
 	assert.Equal(t, int(atomic.LoadInt32(&cb.successCount)), health.SuccessCount)
 }

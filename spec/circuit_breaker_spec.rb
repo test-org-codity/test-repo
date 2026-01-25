@@ -285,7 +285,7 @@ RSpec.describe CircuitBreaker::DistributedCoordinator do
     it 'starts and stops the sync thread without error (network mocked)' do
       response_double = double('Net::HTTPResponse', body: '{"status":"ok"}')
 
-      http_double = double('Net::HTTP')
+      http_double = double('Net::HTTP').as_null_object
       allow(http_double).to receive(:open_timeout=)
       allow(http_double).to receive(:read_timeout=)
       allow(http_double).to receive(:use_ssl=)

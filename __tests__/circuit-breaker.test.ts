@@ -1,13 +1,22 @@
-jest.mock('date-fns', () => ({
-  format: jest.fn(() => '2024-01-01'),
-  subMonths: jest.fn(() => new Date('2024-01-01')),
-}))
+jest.mock('date-fns', () => {
+  const actual = jest.requireActual('date-fns')
+  return {
+    ...actual,
+    format: jest.fn(() => '2024-01-01'),
+    subMonths: jest.fn(() => new Date('2024-01-01')),
+  }
+})
 
-jest.mock('react-use', () => ({
-  useMedia: jest.fn(() => false),
-}))
+jest.mock('react-use', () => {
+  const actual = jest.requireActual('react-use')
+  return {
+    ...actual,
+    useMedia: jest.fn(() => false),
+  }
+})
 
 jest.mock('@/config/redis', () => {
+  const actual = jest.requireActual('@/config/redis')
   const store: Record<string, string> = {}
   const client = {
     get: jest.fn(async (key: string) => (key in store ? store[key] : null)),
@@ -23,6 +32,7 @@ jest.mock('@/config/redis', () => {
     quit: jest.fn(async () => 'OK'),
   }
   return {
+    ...actual,
     getRedisClient: jest.fn().mockResolvedValue(client),
   }
 })

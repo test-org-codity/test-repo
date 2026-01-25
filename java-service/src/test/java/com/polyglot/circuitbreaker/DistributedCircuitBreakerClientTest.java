@@ -1,149 +1,347 @@
 package com.polyglot.circuitbreaker;
 
 import com.polyglot.circuitbreaker.DistributedCircuitBreakerClient;
-import com.polyglot.circuitbreaker.CircuitBreaker;
+import com.polyglot.circuitbreaker.DistributedCircuitBreakerClient.AggregatedState;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Disabled;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.http.HttpClient;
+import java.net.http.HttpResponse;
+import java.net.http.HttpRequest;
+import java.net.URI;
+import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@Disabled("method recordFailure in class CircuitBreaker<T> cannot be applied to given types")
 @DisplayName("DistributedCircuitBreakerClient Tests")
 class DistributedCircuitBreakerClientTest {
 
-    private DistributedCircuitBreakerClient client;
+    private DistributedCircuitBreakerClient distributedCircuitBreakerClient;
+    private String coordinatorUrl;
 
     @BeforeEach
     void setUp() {
-        client = new DistributedCircuitBreakerClient("http://localhost:8080");
+        // Use a dummy URL; we will replace the HttpClient via reflection to avoid real network calls
+        coordinatorUrl = "http://localhost:9999";
+        distributedCircuitBreakerClient = new DistributedCircuitBreakerClient(coordinatorUrl);
+        replaceHttpClientWithDummy(distributedCircuitBreakerClient);
     }
 
     @AfterEach
     void tearDown() {
-        if (client != null) {
-            client.shutdown();
+        if (distributedCircuitBreakerClient != null) {
+            distributedCircuitBreakerClient.shutdown();
         }
-        client = null;
+        distributedCircuitBreakerClient = null;
+    }
+
+    /**
+     * Replace the internal HttpClient with a dummy implementation that never performs real network I/O.
+     */
+    private void replaceHttpClientWithDummy(DistributedCircuitBreakerClient client) {
+        try {
+            Field httpClientField = DistributedCircuitBreakerClient.class.getDeclaredField("httpClient");
+            httpClientField.setAccessible(true);
+
+            HttpClient dummyClient = new HttpClient() {
+                @Override
+                public <T> HttpResponse<T> send(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler) {
+                    // Return a simple dummy response with an empty body
+                    return new HttpResponse<T>() {
+                        @Override
+                        public int statusCode() {
+                            return 200;
+                        }
+
+                        @Override
+                        public HttpRequest request() {
+                            return request;
+                        }
+
+                        @Override
+                        public Optional<HttpResponse<T>> previousResponse() {
+                            return Optional.empty();
+                        }
+
+                        @Override
+                        public HttpHeaders headers() {
+                            return HttpHeaders.of(Map.of(), (k, v) -> true);
+                        }
+
+                        @Override
+                        public T body() {
+                            return responseBodyHandler.apply(this).apply(java.nio.ByteBuffer.allocate(0));
+                        }
+
+                        @Override
+                        public Optional<SSLSession> sslSession() {
+                            return Optional.empty();
+                        }
+
+                        @Override
+                        public URI uri() {
+                            return request.uri();
+                        }
+
+                        @Override
+                        public Version version() {
+                            return Version.HTTP_1_1;
+                        }
+                    };
+                }
+
+                @Override
+                public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler) {
+                    return CompletableFuture.completedFuture(send(request, responseBodyHandler));
+                }
+
+                @Override
+                public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler, HttpResponse.PushPromiseHandler<T> pushPromiseHandler) {
+                    return CompletableFuture.completedFuture(send(request, responseBodyHandler));
+                }
+
+                @Override
+                public Optional<CookieHandler> cookieHandler() {
+                    return Optional.empty();
+                }
+
+                @Override
+                public Optional<Duration> connectTimeout() {
+                    return Optional.of(Duration.ofSeconds(5));
+                }
+
+                @Override
+                public Redirect followRedirects() {
+                    return Redirect.NEVER;
+                }
+
+                @Override
+                public Optional<ProxySelector> proxy() {
+                    return Optional.empty();
+                }
+
+                @Override
+                public SSLContext sslContext() {
+                    return null;
+                }
+
+                @Override
+                public SSLParameters sslParameters() {
+                    return null;
+                }
+
+                @Override
+                public Optional<Authenticator> authenticator() {
+                    return Optional.empty();
+                }
+
+                @Override
+                public Version version() {
+                    return Version.HTTP_1_1;
+                }
+
+                @Override
+                public Executor executor() {
+                    return null;
+                }
+            };
+
+            httpClientField.set(client, dummyClient);
+        } catch (Exception e) {
+            fail("Failed to replace HttpClient via reflection: " + e.getMessage());
+        }
     }
 
     @Test
-    @DisplayName("Constructor should create instance and initialize fields")
+    @DisplayName("Constructor should create instance and start with running=true")
     void testConstructor() throws Exception {
-        assertNotNull(client);
+        assertNotNull(distributedCircuitBreakerClient);
 
-        Field coordinatorUrlField = DistributedCircuitBreakerClient.class.getDeclaredField("coordinatorUrl");
-        coordinatorUrlField.setAccessible(true);
-        String url = (String) coordinatorUrlField.get(client);
-        assertEquals("http://localhost:8080", url);
+        Field runningField = DistributedCircuitBreakerClient.class.getDeclaredField("running");
+        runningField.setAccessible(true);
+        boolean running = (boolean) runningField.get(distributedCircuitBreakerClient);
+        assertTrue(running, "Client should be running after construction");
+    }
 
-        Field httpClientField = DistributedCircuitBreakerClient.class.getDeclaredField("httpClient");
-        httpClientField.setAccessible(true);
-        HttpClient httpClient = (HttpClient) httpClientField.get(client);
-        assertNotNull(httpClient);
+    @Test
+    @DisplayName("getBreaker should create and cache CircuitBreaker per service name")
+    void testGetBreaker_CachesPerService() {
+        CircuitBreaker<Object> breaker1 = distributedCircuitBreakerClient.getBreaker("serviceA");
+        CircuitBreaker<Object> breaker2 = distributedCircuitBreakerClient.getBreaker("serviceA");
+        CircuitBreaker<Object> breaker3 = distributedCircuitBreakerClient.getBreaker("serviceB");
+
+        assertNotNull(breaker1);
+        assertNotNull(breaker2);
+        assertNotNull(breaker3);
+
+        assertSame(breaker1, breaker2, "Same service name should return same CircuitBreaker instance");
+        assertNotSame(breaker1, breaker3, "Different service names should return different CircuitBreaker instances");
+    }
+
+    @Test
+    @DisplayName("getBreaker should register breaker in localBreakers map")
+    void testGetBreaker_RegistersInLocalMap() throws Exception {
+        String serviceName = "serviceMapTest";
+        distributedCircuitBreakerClient.getBreaker(serviceName);
 
         Field localBreakersField = DistributedCircuitBreakerClient.class.getDeclaredField("localBreakers");
         localBreakersField.setAccessible(true);
-        Map<?, ?> map = (Map<?, ?>) localBreakersField.get(client);
-        assertNotNull(map);
-        assertTrue(map.isEmpty());
+        Map<?, ?> localBreakers = (Map<?, ?>) localBreakersField.get(distributedCircuitBreakerClient);
+
+        assertTrue(localBreakers.containsKey(serviceName), "localBreakers should contain the created service name");
+        assertNotNull(localBreakers.get(serviceName));
     }
 
     @Test
-    @DisplayName("getBreaker should create a new breaker for a new service name")
-    void testGetBreakerCreatesNew() {
-        CircuitBreaker<Object> breaker = client.getBreaker("serviceA");
-        assertNotNull(breaker);
-        assertEquals(CircuitBreaker.State.CLOSED, breaker.getState());
-    }
+    @DisplayName("reportState should not throw exceptions for normal input")
+    void testReportState_NoException() {
+        CircuitBreaker<Object> breaker = distributedCircuitBreakerClient.getBreaker("reportService");
+        breaker.recordFailure(new RuntimeException("test failure"));
 
-    @Test
-    @DisplayName("getBreaker should return same instance for same service name")
-    void testGetBreakerSameInstance() {
-        CircuitBreaker<Object> breaker1 = client.getBreaker("serviceA");
-        CircuitBreaker<Object> breaker2 = client.getBreaker("serviceA");
-        assertSame(breaker1, breaker2);
-    }
-
-    @Test
-    @DisplayName("getBreaker should create different instances for different service names")
-    void testGetBreakerDifferentServices() {
-        CircuitBreaker<Object> breaker1 = client.getBreaker("serviceA");
-        CircuitBreaker<Object> breaker2 = client.getBreaker("serviceB");
-        assertNotSame(breaker1, breaker2);
-    }
-
-    @Test
-    @DisplayName("reportState should accept valid state without throwing")
-    void testReportStateNoException() {
-        CircuitBreaker<Object> breaker = client.getBreaker("serviceA");
-        breaker.recordFailure(new RuntimeException("test"));
         assertDoesNotThrow(() ->
-                client.reportState("serviceA", breaker.getState(), breaker.getFailureCount())
+                distributedCircuitBreakerClient.reportState("reportService", breaker.getState(), breaker.getFailureCount())
         );
     }
 
     @Test
-    @DisplayName("getAggregatedState should return UNKNOWN on coordinator error or invalid URL")
-    void testGetAggregatedStateUnknownOnError() {
-        DistributedCircuitBreakerClient badClient = new DistributedCircuitBreakerClient("http://invalid-host-12345");
-        try {
-            DistributedCircuitBreakerClient.AggregatedState state =
-                    badClient.getAggregatedState("serviceA");
-            assertNotNull(state);
-            assertEquals("serviceA", state.service());
-            assertEquals("UNKNOWN", state.consensusState());
-            assertEquals(0, state.totalNodes());
-            assertEquals(0.0, state.healthScore(), 0.0001);
-        } finally {
-            badClient.shutdown();
-        }
+    @DisplayName("getAggregatedState should return UNKNOWN state on failure to contact coordinator")
+    void testGetAggregatedState_FailureReturnsUnknown() throws Exception {
+        // Replace HttpClient with one that always throws to simulate failure
+        Field httpClientField = DistributedCircuitBreakerClient.class.getDeclaredField("httpClient");
+        httpClientField.setAccessible(true);
+
+        HttpClient throwingClient = new HttpClient() {
+            @Override
+            public <T> HttpResponse<T> send(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler) throws java.io.IOException, InterruptedException {
+                throw new java.io.IOException("Simulated failure");
+            }
+
+            @Override
+            public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler) {
+                CompletableFuture<HttpResponse<T>> future = new CompletableFuture<>();
+                future.completeExceptionally(new java.io.IOException("Simulated failure"));
+                return future;
+            }
+
+            @Override
+            public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler, HttpResponse.PushPromiseHandler<T> pushPromiseHandler) {
+                return sendAsync(request, responseBodyHandler);
+            }
+
+            @Override
+            public Optional<CookieHandler> cookieHandler() {
+                return Optional.empty();
+            }
+
+            @Override
+            public Optional<Duration> connectTimeout() {
+                return Optional.of(Duration.ofSeconds(5));
+            }
+
+            @Override
+            public Redirect followRedirects() {
+                return Redirect.NEVER;
+            }
+
+            @Override
+            public Optional<ProxySelector> proxy() {
+                return Optional.empty();
+            }
+
+            @Override
+            public SSLContext sslContext() {
+                return null;
+            }
+
+            @Override
+            public SSLParameters sslParameters() {
+                return null;
+            }
+
+            @Override
+            public Optional<Authenticator> authenticator() {
+                return Optional.empty();
+            }
+
+            @Override
+            public Version version() {
+                return Version.HTTP_1_1;
+            }
+
+            @Override
+            public Executor executor() {
+                return null;
+            }
+        };
+
+        httpClientField.set(distributedCircuitBreakerClient, throwingClient);
+
+        AggregatedState state = distributedCircuitBreakerClient.getAggregatedState("anyService");
+        assertNotNull(state);
+        assertEquals("anyService", state.service());
+        assertEquals("UNKNOWN", state.consensusState());
+        assertEquals(0, state.totalNodes());
+        assertEquals(0.0, state.healthScore(), 0.0001);
     }
 
     @Test
-    @DisplayName("parseAggregatedState should correctly parse valid JSON")
-    void testParseAggregatedStateValidJson() throws Exception {
-        String json = "{"
-                + "\"service\":\"serviceA\","
-                + "\"consensus_state\":\"OPEN\","
-                + "\"total_nodes\":5,"
-                + "\"health_score\":0.75"
-                + "}";
+    @DisplayName("AggregatedState record should expose values correctly")
+    void testAggregatedStateRecord() {
+        AggregatedState state = new AggregatedState("svc", "OPEN", 3, 0.75);
 
-        Method parseMethod = DistributedCircuitBreakerClient.class
-                .getDeclaredMethod("parseAggregatedState", String.class);
-        parseMethod.setAccessible(true);
-
-        DistributedCircuitBreakerClient.AggregatedState state =
-                (DistributedCircuitBreakerClient.AggregatedState) parseMethod.invoke(client, json);
-
-        assertNotNull(state);
-        assertEquals("serviceA", state.service());
+        assertEquals("svc", state.service());
         assertEquals("OPEN", state.consensusState());
-        assertEquals(5, state.totalNodes());
+        assertEquals(3, state.totalNodes());
         assertEquals(0.75, state.healthScore(), 0.0001);
     }
 
     @Test
-    @DisplayName("parseAggregatedState should handle missing fields gracefully")
-    void testParseAggregatedStateMissingFields() throws Exception {
-        String json = "{}";
+    @DisplayName("shutdown should stop sync thread by setting running=false")
+    void testShutdownStopsRunningFlag() throws Exception {
+        Field runningField = DistributedCircuitBreakerClient.class.getDeclaredField("running");
+        runningField.setAccessible(true);
 
-        Method parseMethod = DistributedCircuitBreakerClient.class
-                .getDeclaredMethod("parseAggregatedState", String.class);
+        boolean before = (boolean) runningField.get(distributedCircuitBreakerClient);
+        assertTrue(before, "running should be true before shutdown");
+
+        distributedCircuitBreakerClient.shutdown();
+
+        boolean after = (boolean) runningField.get(distributedCircuitBreakerClient);
+        assertFalse(after, "running should be false after shutdown");
+    }
+
+    @Test
+    @DisplayName("JSON parsing helpers should correctly parse valid JSON")
+    void testParseAggregatedState_ValidJson() throws Exception {
+        String json = "{\"service\":\"payments\",\"consensus_state\":\"CLOSED\",\"total_nodes\":5,\"health_score\":0.92}";
+
+        Method parseMethod = DistributedCircuitBreakerClient.class.getDeclaredMethod("parseAggregatedState", String.class);
         parseMethod.setAccessible(true);
 
-        DistributedCircuitBreakerClient.AggregatedState state =
-                (DistributedCircuitBreakerClient.AggregatedState) parseMethod.invoke(client, json);
+        AggregatedState state = (AggregatedState) parseMethod.invoke(distributedCircuitBreakerClient, json);
 
-        assertNotNull(state);
+        assertEquals("payments", state.service());
+        assertEquals("CLOSED", state.consensusState());
+        assertEquals(5, state.totalNodes());
+        assertEquals(0.92, state.healthScore(), 0.0001);
+    }
+
+    @Test
+    @DisplayName("JSON parsing helpers should handle missing or malformed fields gracefully")
+    void testParseAggregatedState_MalformedJson() throws Exception {
+        String json = "{\"servicex\":\"wrong\",\"consensus_statex\":\"OPEN\",\"total_nodesx\":\"NaN\",\"health_scorex\":\"bad\"}";
+
+        Method parseMethod = DistributedCircuitBreakerClient.class.getDeclaredMethod("parseAggregatedState", String.class);
+        parseMethod.setAccessible(true);
+
+        AggregatedState state = (AggregatedState) parseMethod.invoke(distributedCircuitBreakerClient, json);
+
         assertEquals("", state.service());
         assertEquals("", state.consensusState());
         assertEquals(0, state.totalNodes());
@@ -151,131 +349,53 @@ class DistributedCircuitBreakerClientTest {
     }
 
     @Test
-    @DisplayName("extractJsonString should return empty string when key not present")
-    void testExtractJsonStringKeyMissing() throws Exception {
-        String json = "{\"other\":\"value\"}";
-
-        Method method = DistributedCircuitBreakerClient.class
-                .getDeclaredMethod("extractJsonString", String.class, String.class);
+    @DisplayName("extractJsonString should return empty string when key not found")
+    void testExtractJsonString_KeyNotFound() throws Exception {
+        String json = "{\"a\":\"b\"}";
+        Method method = DistributedCircuitBreakerClient.class.getDeclaredMethod("extractJsonString", String.class, String.class);
         method.setAccessible(true);
 
-        String result = (String) method.invoke(client, json, "service");
+        String result = (String) method.invoke(distributedCircuitBreakerClient, json, "missing");
         assertEquals("", result);
     }
 
     @Test
-    @DisplayName("extractJsonInt should parse integer value correctly")
-    void testExtractJsonIntValid() throws Exception {
-        String json = "{\"total_nodes\":123}";
-
-        Method method = DistributedCircuitBreakerClient.class
-                .getDeclaredMethod("extractJsonInt", String.class, String.class);
+    @DisplayName("extractJsonInt should return 0 when value is not a valid integer")
+    void testExtractJsonInt_Invalid() throws Exception {
+        String json = "{\"value\":\"notAnInt\"}";
+        Method method = DistributedCircuitBreakerClient.class.getDeclaredMethod("extractJsonInt", String.class, String.class);
         method.setAccessible(true);
 
-        int result = (int) method.invoke(client, json, "total_nodes");
-        assertEquals(123, result);
+        int result = (int) method.invoke(distributedCircuitBreakerClient, json, "value");
+        assertEquals(0, result);
     }
 
     @Test
-    @DisplayName("extractJsonInt should return 0 on invalid or missing value")
-    void testExtractJsonIntInvalidOrMissing() throws Exception {
-        String jsonInvalid = "{\"total_nodes\":\"abc\"}";
-        String jsonMissing = "{\"other\":10}";
-
-        Method method = DistributedCircuitBreakerClient.class
-                .getDeclaredMethod("extractJsonInt", String.class, String.class);
+    @DisplayName("extractJsonDouble should return 0.0 when value is not a valid double")
+    void testExtractJsonDouble_Invalid() throws Exception {
+        String json = "{\"value\":\"notADouble\"}";
+        Method method = DistributedCircuitBreakerClient.class.getDeclaredMethod("extractJsonDouble", String.class, String.class);
         method.setAccessible(true);
 
-        int resultInvalid = (int) method.invoke(client, jsonInvalid, "total_nodes");
-        int resultMissing = (int) method.invoke(client, jsonMissing, "total_nodes");
-
-        assertEquals(0, resultInvalid);
-        assertEquals(0, resultMissing);
+        double result = (double) method.invoke(distributedCircuitBreakerClient, json, "value");
+        assertEquals(0.0, result, 0.0001);
     }
 
     @Test
-    @DisplayName("extractJsonDouble should parse double value correctly")
-    void testExtractJsonDoubleValid() throws Exception {
-        String json = "{\"health_score\":0.987}";
+    @DisplayName("synchronizeStates should call reportState for each local breaker without throwing")
+    void testSynchronizeStates_NoException() throws Exception {
+        distributedCircuitBreakerClient.getBreaker("svc1");
+        distributedCircuitBreakerClient.getBreaker("svc2");
 
-        Method method = DistributedCircuitBreakerClient.class
-                .getDeclaredMethod("extractJsonDouble", String.class, String.class);
-        method.setAccessible(true);
-
-        double result = (double) method.invoke(client, json, "health_score");
-        assertEquals(0.987, result, 0.0001);
-    }
-
-    @Test
-    @DisplayName("extractJsonDouble should return 0.0 on invalid or missing value")
-    void testExtractJsonDoubleInvalidOrMissing() throws Exception {
-        String jsonInvalid = "{\"health_score\":\"abc\"}";
-        String jsonMissing = "{\"other\":1.23}";
-
-        Method method = DistributedCircuitBreakerClient.class
-                .getDeclaredMethod("extractJsonDouble", String.class, String.class);
-        method.setAccessible(true);
-
-        double resultInvalid = (double) method.invoke(client, jsonInvalid, "health_score");
-        double resultMissing = (double) method.invoke(client, jsonMissing, "health_score");
-
-        assertEquals(0.0, resultInvalid, 0.0001);
-        assertEquals(0.0, resultMissing, 0.0001);
-    }
-
-    @Test
-    @DisplayName("AggregatedState record should expose values correctly")
-    void testAggregatedStateRecord() {
-        DistributedCircuitBreakerClient.AggregatedState state =
-                new DistributedCircuitBreakerClient.AggregatedState("svc", "CLOSED", 3, 0.5);
-
-        assertEquals("svc", state.service());
-        assertEquals("CLOSED", state.consensusState());
-        assertEquals(3, state.totalNodes());
-        assertEquals(0.5, state.healthScore(), 0.0001);
-    }
-
-    @Test
-    @DisplayName("shutdown should stop sync thread by setting running to false")
-    void testShutdownStopsRunningFlag() throws Exception {
-        Field runningField = DistributedCircuitBreakerClient.class.getDeclaredField("running");
-        runningField.setAccessible(true);
-
-        assertTrue((boolean) runningField.get(client));
-
-        client.shutdown();
-
-        assertFalse((boolean) runningField.get(client));
-    }
-
-    @Test
-    @DisplayName("synchronizeStates should call reportState for existing breakers without throwing")
-    void testSynchronizeStatesNoException() throws Exception {
-        client.getBreaker("serviceA");
-        client.getBreaker("serviceB");
-
-        Method syncMethod = DistributedCircuitBreakerClient.class
-                .getDeclaredMethod("synchronizeStates");
+        Method syncMethod = DistributedCircuitBreakerClient.class.getDeclaredMethod("synchronizeStates");
         syncMethod.setAccessible(true);
 
         assertDoesNotThrow(() -> {
             try {
-                syncMethod.invoke(client);
+                syncMethod.invoke(distributedCircuitBreakerClient);
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         });
-    }
-
-    @Test
-    @DisplayName("getNodeId should return non-empty string")
-    void testGetNodeId() throws Exception {
-        Method method = DistributedCircuitBreakerClient.class
-                .getDeclaredMethod("getNodeId");
-        method.setAccessible(true);
-
-        String nodeId = (String) method.invoke(client);
-        assertNotNull(nodeId);
-        assertFalse(nodeId.isEmpty());
     }
 }

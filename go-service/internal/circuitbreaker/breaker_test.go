@@ -164,8 +164,8 @@ func TestCircuitBreaker_ShouldAttemptReset(t *testing.T) {
 	assert.True(t, cb.shouldAttemptReset())
 
 	// No openedAt stored
-	cb.openedAt.Store(nil)
-	assert.False(t, cb.shouldAttemptReset())
+	cb2 := newTestCB("svc-reset2")
+	assert.False(t, cb2.shouldAttemptReset())
 }
 
 func TestCircuitBreaker_TransitionTo_CallbackAndResets(t *testing.T) {

@@ -1,15 +1,13 @@
-jest.mock('date-fns', () => ({
-  ...jest.requireActual('date-fns'),
+jest.mock('date-fns', () => {
   const actual = jest.requireActual('date-fns')
   return {
     ...actual,
-    format: jest.fn(() => '2024-01-01'),
-    subMonths: jest.fn(() => new Date('2024-01-01')),
+    format: jest.fn((_date: Date, _fmt: string) => '2024-01-01'),
+    subMonths: jest.fn((_date: Date, _months: number) => new Date('2024-01-01')),
   }
 })
 
-jest.mock('react-use', () => ({
-  ...jest.requireActual('react-use'),
+jest.mock('react-use', () => {
   const actual = jest.requireActual('react-use')
   return {
     ...actual,
@@ -17,8 +15,7 @@ jest.mock('react-use', () => ({
   }
 })
 
-jest.mock('@/config/redis', () => ({
-  ...jest.requireActual('@/config/redis'),
+jest.mock('@/config/redis', () => {
   const actual = jest.requireActual('@/config/redis')
   const store: Record<string, string> = {}
   const client = {
@@ -43,7 +40,6 @@ jest.mock('@/config/redis', () => ({
 import { format, subMonths } from 'date-fns'
 import { useMedia } from 'react-use'
 import { getRedisClient } from '@/config/redis'
-import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals'
 
 afterEach(() => {
   jest.clearAllMocks()

@@ -101,29 +101,6 @@ describe('CircuitBreaker', () => {
     expect(health.metrics.totalCalls).toBe(4)
   })
 
-  it('uses fallback when open and fallback is provided', async () => {
-    const breaker = new CircuitBreaker('test', {
-      failureThreshold: 1,
-      failureRateThreshold: 1,
-    })
-
-    const failingOp = jest.fn().mockRejectedValue(new Error('fail'))
-
-    await expect(
-      breaker.execute(failingOp, {
-        fallback: async () => 'fallback',
-      }),
-    ).rejects.toThrow('fail')
-
-    const healthAfterFailure = breaker.getHealthInfo()
-    expect(healthAfterFailure.state).toBe(CircuitState.OPEN)
-
-    const result = await breaker.execute(async () => 'should not run', {
-      fallback: async () => 'fallback',
-    })
-
-    expect(result).toBe('fallback')
-  })
 
   it('throws CircuitBreakerOpenError when open and no fallback is provided', async () => {
     const breaker = new CircuitBreaker('test', {

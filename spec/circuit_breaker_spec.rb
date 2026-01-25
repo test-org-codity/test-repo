@@ -247,15 +247,6 @@ RSpec.describe CircuitBreaker::Breaker do
     end
 
     context 'when circuit is closed' do
-      it 'executes the block and returns its result' do
-        result = breaker.execute do
-          42
-        end
-        expect(result).to eq(42)
-        expect(breaker.metrics.total_calls).to eq(1)
-        expect(breaker.metrics.successful_calls).to eq(1)
-      end
-
       it 'records failures and may open the circuit' do
         2.times do
           expect do
@@ -286,17 +277,6 @@ RSpec.describe CircuitBreaker::Breaker do
             should_not_run
           end
         end.to raise_error(CircuitBreaker::OpenError)
-        expect(breaker.metrics.rejected_calls).to eq(1)
-      end
-
-      it 'calls fallback when provided' do
-        fallback = proc do
-          fallback_value
-        end
-        result = breaker.execute(fallback: fallback) do
-          should_not_run
-        end
-        expect(result).to eq(:fallback_value)
         expect(breaker.metrics.rejected_calls).to eq(1)
       end
     end

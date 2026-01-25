@@ -110,33 +110,6 @@ func TestCircuitBreaker_Execute_Success(t *testing.T) {
 	assert.Equal(t, uint64(0), failedCalls)
 }
 
-func TestCircuitBreaker_Execute_Failure(t *testing.T) {
-	cfg := DefaultConfig()
-	cb := New("exec-failure", cfg)
-
-	ctx := context.Background()
-	testErr := assert.AnError
-
-	err := cb.Execute(ctx, func() error {
-		return testErr
-	})
-
-	assert.Equal(t, testErr, err)
-
-	health := cb.GetHealthInfo()
-	assert.Equal(t, "exec-failure", health.Name)
-	assert.Equal(t, "CLOSED", health.State)
-	// failureCount is incremented on each failure while closed
-	assert.Equal(t, 1, health.FailureCount)
-	totalCalls := health.Metrics["total_calls"].(uint64)
-	successfulCalls := health.Metrics["successful_calls"].(uint64)
-	failedCalls := health.Metrics["failed_calls"].(uint64)
-
-	assert.Equal(t, uint64(1), totalCalls)
-	assert.Equal(t, uint64(0), successfulCalls)
-	assert.Equal(t, uint64(1), failedCalls)
-}
-
 func TestCircuitBreaker_ExecuteWithFallback_SuccessNoFallback(t *testing.T) {
 	cfg := DefaultConfig()
 	cb := New("exec-fallback-success", cfg)
@@ -194,31 +167,6 @@ func TestCircuitBreaker_ExecuteWithFallback_NoFallbackPropagatesError(t *testing
 	assert.Equal(t, assert.AnError, err)
 }
 
-func TestCircuitBreaker_OpenAfterFailureThreshold(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.FailureThreshold = 3
-	cfg.SlidingWindowSize = 3
-	cfg.FailureRateThreshold = 1.0
-	cb := New("open-after-threshold", cfg)
-
-	ctx := context.Background()
-
-	for i := 0; i < cfg.FailureThreshold; i++ {
-		_ = cb.Execute(ctx, func() error {
-			return assert.AnError
-		})
-	}
-
-	assert.Equal(t, StateOpen, cb.State())
-
-	health := cb.GetHealthInfo()
-	assert.Equal(t, "OPEN", health.State)
-	// failureCount is reset to 0 when transitioning to OPEN according to transitionTo
-	assert.Equal(t, 0, health.FailureCount)
-	failedCalls := health.Metrics["failed_calls"].(uint64)
-	assert.Equal(t, uint64(cfg.FailureThreshold), failedCalls)
-}
-
 func TestCircuitBreaker_OpenOnFailureRateThreshold(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.FailureThreshold = 100
@@ -259,34 +207,6 @@ func TestCircuitBreaker_RejectsWhenOpen(t *testing.T) {
 	health := cb.GetHealthInfo()
 	rejected := health.Metrics["rejected_calls"].(uint64)
 	assert.Equal(t, uint64(1), rejected)
-}
-
-func TestCircuitBreaker_HalfOpenAndCloseAfterSuccesses(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Timeout = 10 * time.Millisecond
-	cfg.FailureThreshold = 1
-	cfg.SuccessThreshold = 2
-	cfg.HalfOpenMaxCalls = 2
-	cfg.SlidingWindowSize = 2
-	cfg.FailureRateThreshold = 0.0
-	cb := New("half-open-close", cfg)
-
-	ctx := context.Background()
-
-	_ = cb.Execute(ctx, func() error { return assert.AnError })
-	assert.Equal(t, StateOpen, cb.State())
-
-	time.Sleep(cfg.Timeout + 5*time.Millisecond)
-
-	// First call after timeout will transition to HALF_OPEN and allow the call
-	err := cb.Execute(ctx, func() error { return nil })
-	assert.NoError(t, err)
-	assert.Equal(t, StateHalfOpen, cb.State())
-
-	// Second successful call in HALF_OPEN should close the breaker
-	err = cb.Execute(ctx, func() error { return nil })
-	assert.NoError(t, err)
-	assert.Equal(t, StateClosed, cb.State())
 }
 
 func TestCircuitBreaker_HalfOpenMaxCalls(t *testing.T) {

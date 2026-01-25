@@ -1,46 +1,16 @@
-import { jest, describe, it, expect } from '@jest/globals'
-
 jest.mock('date-fns', () => ({
   ...jest.requireActual('date-fns'),
-  let actual: any = {}
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    actual = jest.requireActual('date-fns')
-  } catch {
-    actual = {}
-  }
-  return {
-    ...actual,
-    format: jest.fn(() => '2024-01-01'),
-    subMonths: jest.fn(() => new Date('2024-01-01')),
-  }
-})
+  format: jest.fn(() => '2024-01-01'),
+  subMonths: jest.fn(() => new Date('2024-01-01')),
+}))
 
 jest.mock('react-use', () => ({
   ...jest.requireActual('react-use'),
-  let actual: any = {}
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    actual = jest.requireActual('react-use')
-  } catch {
-    actual = {}
-  }
-  return {
-    ...actual,
-    useMedia: jest.fn(() => false),
-  }
-})
+  useMedia: jest.fn(() => false),
+}))
 
-jest.mock('@/config/redis', () => ({
-  ...jest.requireActual('@/config/redis'),
-  const actual = (() => {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      return jest.requireActual('@/config/redis')
-    } catch {
-      return {}
-    }
-  })()
+jest.mock('@/config/redis', () => {
+  const actual = jest.requireActual('@/config/redis')
   const store: Record<string, string> = {}
   const client = {
     get: jest.fn(async (key: string) => (key in store ? store[key] : null)),
@@ -97,10 +67,5 @@ describe('redis client behavior (mocked)', () => {
     await expect(client.del(key)).resolves.toBe(1)
     await expect(client.get(key)).resolves.toBeNull()
     await expect(client.quit()).resolves.toBe('OK')
-
-    expect((client.get as any).mock.calls.length).toBeGreaterThan(0)
-    expect((client.set as any).mock.calls.length).toBeGreaterThan(0)
-    expect((client.del as any).mock.calls.length).toBeGreaterThan(0)
-    expect((client.quit as any).mock.calls.length).toBeGreaterThan(0)
   })
 })

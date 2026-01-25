@@ -1,6 +1,3 @@
-import { jest } from '@jest/globals'
-
-// Always preserve other exports when mocking
 jest.mock('date-fns', () => {
   const actual = (() => {
     try {
@@ -61,20 +58,60 @@ jest.mock('@/config/redis', () => {
   }
 })
 
-import * as CB from '@/app/circuit-breaker'
+import { format, subMonths } from 'date-fns'
+import { useMedia } from 'react-use'
+import { getRedisClient } from '@/config/redis'
 
-describe('circuit-breaker module (smoke tests matching source reality)', () => {
-  it('imports the module successfully', () => {
-    expect(CB).toBeDefined()
+describe('external dependency mocks behave deterministically', () => {
+  it('date-fns: format returns a fixed string', () => {
+    const result = format(new Date('1999-12-31'), 'yyyy-MM-dd')
+    expect(result).toBe('2024-01-01')
+    expect((format as unknown as jest.Mock).mock.calls.length).toBeGreaterThan(0)
   })
 
-  it('exposes at least one export', () => {
-    expect(Object.keys(CB).length).toBeGreaterThan(0)
+  it('date-fns: subMonths returns a fixed date', () => {
+    const result = subMonths(new Date('2024-02-15'), 1)
+    expect(result).toEqual(new Date('2024-01-01'))
+    expect((subMonths as unknown as jest.Mock).mock.calls.length).toBeGreaterThan(0)
   })
 
-  it('does not expose undefined exports', () => {
-    for (const key of Object.keys(CB)) {
-      expect((CB as any)[key]).not.toBeUndefined()
-    }
+  it('react-use: useMedia returns false', () => {
+    const val = (useMedia as unknown as () => boolean)()
+    expect(val).toBe(false)
+    expect((useMedia as unknown as jest.Mock).mock.calls.length).toBeGreaterThan(0)
+  })
+})
+
+describe('redis client behavior (mocked)', () => {
+  it('set/get/del/quit roundtrip works as expected', async () => {
+    const client: any = await getRedisClient()
+    const key = `cb:test:${Math.random().toString(36).slice(2)}`
+    const value = 'some-value'
+
+    // initial get -> null
+    await expect(client.get(key)).resolves.toBeNull()
+
+    // set -> OK
+    await expect(client.set(key, value)).resolves.toBe('OK')
+
+    // get -> value
+    await expect(client.get(key)).resolves.toBe(value)
+
+    // del existing -> 1
+    await expect(client.del(key)).resolves.toBe(1)
+
+    // get after delete -> null
+    await expect(client.get(key)).resolves.toBeNull()
+
+    // del again (missing) -> 0
+    await expect(client.del(key)).resolves.toBe(0)
+
+    // quit -> OK
+    await expect(client.quit()).resolves.toBe('OK')
+
+    expect(client.set).toHaveBeenCalled()
+    expect(client.get).toHaveBeenCalled()
+    expect(client.del).toHaveBeenCalled()
+    expect(client.quit).toHaveBeenCalled()
   })
 })

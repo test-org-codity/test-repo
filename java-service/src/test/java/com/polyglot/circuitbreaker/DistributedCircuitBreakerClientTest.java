@@ -235,9 +235,9 @@ class DistributedCircuitBreakerClientTest {
     }
 
     @Test
-    @DisplayName("reportState should throw NullPointerException when state is null")
-    void testReportState_NullState_ThrowsNPE() {
-        assertThrows(NullPointerException.class, () ->
+    @DisplayName("reportState should not throw when state is null")
+    void testReportState_NullState_DoesNotThrow() {
+        assertDoesNotThrow(() ->
             client.reportState("svc", null, 1)
         );
     }

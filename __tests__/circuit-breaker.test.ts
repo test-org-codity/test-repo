@@ -1,15 +1,33 @@
 import { jest, describe, it, expect } from '@jest/globals'
 
-jest.mock('date-fns', () => ({
-  ...jest.requireActual('date-fns'),
-  format: jest.fn((date: Date, fmt: string) => '2024-01-01'),
-  subMonths: jest.fn((date: Date, n: number) => new Date('2024-01-01')),
-}))
+jest.mock('date-fns', () => {
+  let actual: any = {}
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    actual = jest.requireActual('date-fns')
+  } catch {
+    actual = {}
+  }
+  return {
+    ...actual,
+    format: jest.fn(() => '2024-01-01'),
+    subMonths: jest.fn(() => new Date('2024-01-01')),
+  }
+})
 
-jest.mock('react-use', () => ({
-  ...jest.requireActual('react-use'),
-  useMedia: jest.fn(() => false),
-}))
+jest.mock('react-use', () => {
+  let actual: any = {}
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    actual = jest.requireActual('react-use')
+  } catch {
+    actual = {}
+  }
+  return {
+    ...actual,
+    useMedia: jest.fn(() => false),
+  }
+})
 
 jest.mock('@/config/redis', () => {
   const actual = (() => {

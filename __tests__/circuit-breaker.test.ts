@@ -1,6 +1,7 @@
 import { jest, describe, it, expect } from '@jest/globals'
 
-jest.mock('date-fns', () => {
+jest.mock('date-fns', () => ({
+  ...jest.requireActual('date-fns'),
   let actual: any = {}
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -15,7 +16,8 @@ jest.mock('date-fns', () => {
   }
 })
 
-jest.mock('react-use', () => {
+jest.mock('react-use', () => ({
+  ...jest.requireActual('react-use'),
   let actual: any = {}
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -29,7 +31,8 @@ jest.mock('react-use', () => {
   }
 })
 
-jest.mock('@/config/redis', () => {
+jest.mock('@/config/redis', () => ({
+  ...jest.requireActual('@/config/redis'),
   const actual = (() => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires

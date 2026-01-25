@@ -25,7 +25,7 @@ func TestRingBuffer_AddAndAverage(t *testing.T) {
 
 	// Wrap-around: buffer now holds [60, 20, 30] after adding 60ms
 	rb.Add(60 * time.Millisecond)
-	assert.Equal(t, 36*time.Millisecond, rb.Average())
+	assert.Equal(t, (110*time.Millisecond)/3, rb.Average())
 }
 
 func newTestConfig() Config {

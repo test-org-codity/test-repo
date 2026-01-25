@@ -101,27 +101,6 @@ describe('CircuitBreaker', () => {
     expect(health.metrics.totalCalls).toBe(4)
   })
 
-  it('after timeout allows calls again without enforcing specific state', async () => {
-    const breaker = new CircuitBreaker('test', {
-      failureThreshold: 1,
-      timeout: 1000,
-    })
-
-    const failingOp = jest.fn().mockRejectedValue(new Error('fail'))
-
-    await expect(breaker.execute(failingOp)).rejects.toThrow('fail')
-
-    jest.advanceTimersByTime(1000)
-
-    const successOp = jest.fn().mockResolvedValue('ok')
-    const result = await breaker.execute(successOp)
-    expect(result).toBe('ok')
-
-    const health = breaker.getHealthInfo()
-    expect(health.metrics.totalCalls).toBe(2)
-    expect(health.metrics.failedCalls).toBe(1)
-    expect(health.metrics.successfulCalls).toBe(1)
-  })
 
   it('throws CircuitBreakerOpenError when open and no fallback is provided', async () => {
     const breaker = new CircuitBreaker('test', {

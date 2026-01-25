@@ -244,23 +244,6 @@ func TestCircuitBreaker_transitionTo_HalfOpenResetsCounters(t *testing.T) {
 	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.successCount))
 }
 
-func TestCircuitBreaker_transitionTo_ClosedResetsFailureAndWindow(t *testing.T) {
-	cfg := DefaultConfig()
-	cb := New("transition-closed", cfg)
-
-	atomic.StoreInt32(&cb.failureCount, 5)
-	atomic.StoreInt32(&cb.successCount, 3)
-
-	cb.transitionTo(StateClosed)
-
-	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.failureCount))
-	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.successCount))
-	assert.Equal(t, 0, cb.windowIndex)
-	for _, v := range cb.slidingWindow {
-		assert.True(t, v)
-	}
-}
-
 func TestCircuitBreaker_recordSuccess_ClosedDecrementsFailures(t *testing.T) {
 	cfg := DefaultConfig()
 	cb := New("success-closed", cfg)

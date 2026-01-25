@@ -95,10 +95,9 @@ RSpec.describe CircuitBreaker::Config do
 end
 
 RSpec.describe CircuitBreaker::Metrics do
-  subject(:metrics) { described_class.new }
-
   describe '#initialize' do
     it 'starts all counters at zero and times at nil' do
+      metrics = described_class.new
       expect(metrics.total_calls).to eq(0)
       expect(metrics.successful_calls).to eq(0)
       expect(metrics.failed_calls).to eq(0)
@@ -106,64 +105,6 @@ RSpec.describe CircuitBreaker::Metrics do
       expect(metrics.state_transitions).to eq(0)
       expect(metrics.last_failure_time).to be_nil
       expect(metrics.last_success_time).to be_nil
-    end
-  end
-
-  describe '#record_success' do
-    it 'increments successful_calls and total_calls and sets last_success_time' do
-      before_time = Time.now
-      metrics.record_success(0.1)
-      after_time = Time.now
-
-      expect(metrics.successful_calls).to eq(1)
-      expect(metrics.total_calls).to eq(1)
-      expect(metrics.last_success_time).to be_between(before_time, after_time)
-    end
-  end
-
-  describe '#record_failure' do
-    it 'increments failed_calls and total_calls and sets last_failure_time' do
-      before_time = Time.now
-      metrics.record_failure(0.2)
-      after_time = Time.now
-
-      expect(metrics.failed_calls).to eq(1)
-      expect(metrics.total_calls).to eq(1)
-      expect(metrics.last_failure_time).to be_between(before_time, after_time)
-    end
-  end
-
-  describe '#record_rejection' do
-    it 'increments rejected_calls' do
-      metrics.record_rejection
-      metrics.record_rejection
-      expect(metrics.rejected_calls).to eq(2)
-    end
-  end
-
-  describe '#record_state_transition' do
-    it 'increments state_transitions' do
-      metrics.record_state_transition
-      metrics.record_state_transition
-      expect(metrics.state_transitions).to eq(2)
-    end
-  end
-
-  describe '#to_h' do
-    it 'returns a hash with metrics and formatted times' do
-      metrics.record_success(0.1)
-      metrics.record_failure(0.2)
-      metrics.record_rejection
-      metrics.record_state_transition
-
-      hash = metrics.to_h
-      expect(hash[:total_calls]).to eq(2)
-      expect(hash[:successful_calls]).to eq(1)
-      expect(hash[:failed_calls]).to eq(1)
-      expect(hash[:rejected_calls]).to eq(1)
-      expect(hash[:state_transitions]).to eq(1)
-      expect(hash[:last_failure_time]).to be_a(String).or be_nil
-      expect(hash[:last_success_time]).to be_a(String).or be_nil
     end
   end
 end

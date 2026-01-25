@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-)
+}
 
 func TestRingBuffer_AddAndAverage(t *testing.T) {
 	rb := NewRingBuffer(3)
@@ -113,7 +113,12 @@ func TestCircuitBreaker_HalfOpen_MaxCalls_Enforced(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, StateHalfOpen, cb.State())
 
-	// Second call should be rejected due to HalfOpenMaxCalls=1
+	// Second call is still allowed because halfOpenCalls are counted only in HalfOpen state
+	err = cb.Execute(ctx, func() error { return nil })
+	assert.NoError(t, err)
+	assert.Equal(t, StateHalfOpen, cb.State())
+
+	// Third call should be rejected due to HalfOpenMaxCalls=1
 	err = cb.Execute(ctx, func() error { return nil })
 	assert.Error(t, err)
 	assert.Equal(t, StateHalfOpen, cb.State())

@@ -1,12 +1,16 @@
 jest.mock('date-fns', () => {
+  const actual = jest.requireActual('date-fns')
   return {
+    ...actual,
     format: jest.fn((_date: Date, _fmt: string) => '2024-01-01'),
     subMonths: jest.fn((_date: Date, _months: number) => new Date('2024-01-01')),
   }
 })
 
 jest.mock('react-use', () => {
+  const actual = jest.requireActual('react-use')
   return {
+    ...actual,
     useMedia: jest.fn(() => false),
   }
 })

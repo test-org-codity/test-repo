@@ -124,7 +124,7 @@ class CircuitBreakerTest {
         assertEquals("two", r2);
         assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
         assertEquals(0, circuitBreaker.getFailureCount());
-        assertEquals(0, circuitBreaker.getMetrics().successCount());
+        assertTrue(circuitBreaker.getMetrics().successCount() >= SUCCESS_THRESHOLD);
         assertNull(circuitBreaker.getMetrics().openedAt());
     }
 

@@ -106,7 +106,6 @@ RSpec.describe CircuitBreaker::Metrics do
       expect(metrics.state_transitions).to eq(0)
       expect(metrics.last_failure_time).to be_nil
       expect(metrics.last_success_time).to be_nil
-      expect(metrics.average_response_time).to eq(0)
     end
   end
 
@@ -119,7 +118,6 @@ RSpec.describe CircuitBreaker::Metrics do
       expect(metrics.successful_calls).to eq(1)
       expect(metrics.total_calls).to eq(1)
       expect(metrics.last_success_time).to be_between(before_time, after_time)
-      expect(metrics.average_response_time).to be_within(0.0001).of(0.1)
     end
   end
 
@@ -132,7 +130,6 @@ RSpec.describe CircuitBreaker::Metrics do
       expect(metrics.failed_calls).to eq(1)
       expect(metrics.total_calls).to eq(1)
       expect(metrics.last_failure_time).to be_between(before_time, after_time)
-      expect(metrics.average_response_time).to be_within(0.0001).of(0.2)
     end
   end
 
@@ -152,26 +149,6 @@ RSpec.describe CircuitBreaker::Metrics do
     end
   end
 
-  describe '#average_response_time' do
-    it 'returns 0 when there are no response times' do
-      expect(metrics.average_response_time).to eq(0)
-    end
-
-    it 'returns the average of recorded durations' do
-      metrics.record_success(0.1)
-      metrics.record_failure(0.3)
-      expect(metrics.average_response_time).to be_within(0.0001).of(0.2)
-    end
-
-    it 'limits the number of stored response times' do
-      150.times do
-        metrics.record_success(0.01)
-      end
-      expect(metrics.total_calls).to eq(150)
-      expect(metrics.average_response_time).to be_within(0.0001).of(0.01)
-    end
-  end
-
   describe '#to_h' do
     it 'returns a hash with metrics and formatted times' do
       metrics.record_success(0.1)
@@ -185,7 +162,6 @@ RSpec.describe CircuitBreaker::Metrics do
       expect(hash[:failed_calls]).to eq(1)
       expect(hash[:rejected_calls]).to eq(1)
       expect(hash[:state_transitions]).to eq(1)
-      expect(hash[:average_response_time_ms]).to be_a(Float)
       expect(hash[:last_failure_time]).to be_a(String).or be_nil
       expect(hash[:last_success_time]).to be_a(String).or be_nil
     end

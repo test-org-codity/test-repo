@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-)
+}
 
 func TestState_String(t *testing.T) {
 	tests := []struct {
@@ -68,7 +68,9 @@ func TestNewCircuitBreaker_InitialState(t *testing.T) {
 	assert.Equal(t, cfg, cb.config)
 	assert.Len(t, cb.slidingWindow, cfg.SlidingWindowSize)
 	assert.NotNil(t, cb.metrics)
-	assert.NotNil(t, cb.metrics.responseTimes)
+	if cb.metrics != nil {
+		assert.NotNil(t, cb.metrics.responseTimes)
+	}
 }
 
 func TestGetOrCreate(t *testing.T) {

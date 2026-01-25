@@ -7,14 +7,16 @@ import {
   withCircuitBreaker,
 } from './circuit-breaker.test'
 
-jest.mock('@/app/circuit-breaker', () => {
+jest.mock('@/app/circuit-breaker', () => ({
+  ...jest.requireActual('@/app/circuit-breaker'),
   const actual = jest.requireActual('@/app/circuit-breaker')
   return {
     ...actual,
   }
 })
 
-jest.mock('@/config/redis', () => {
+jest.mock('@/config/redis', () => ({
+  ...jest.requireActual('@/config/redis'),
   const actual = jest.requireActual('@/config/redis')
   return {
     ...actual,

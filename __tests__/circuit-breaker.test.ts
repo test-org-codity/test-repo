@@ -1,4 +1,5 @@
-jest.mock('date-fns', () => {
+jest.mock('date-fns', () => ({
+  ...jest.requireActual('date-fns'),
   const actual = (() => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -14,7 +15,8 @@ jest.mock('date-fns', () => {
   }
 })
 
-jest.mock('react-use', () => {
+jest.mock('react-use', () => ({
+  ...jest.requireActual('react-use'),
   const actual = (() => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -29,7 +31,8 @@ jest.mock('react-use', () => {
   }
 })
 
-jest.mock('@/config/redis', () => {
+jest.mock('@/config/redis', () => ({
+  ...jest.requireActual('@/config/redis'),
   const actual = (() => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -61,6 +64,7 @@ jest.mock('@/config/redis', () => {
 import { format, subMonths } from 'date-fns'
 import { useMedia } from 'react-use'
 import { getRedisClient } from '@/config/redis'
+import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals'
 
 describe('external dependency mocks behave deterministically', () => {
   it('date-fns: format returns a fixed string', () => {

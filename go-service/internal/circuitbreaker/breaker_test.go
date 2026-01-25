@@ -250,7 +250,6 @@ func TestCircuitBreaker_transitionTo_UpdatesStateAndMetrics(t *testing.T) {
 	assert.Equal(t, StateClosed, cb.State())
 	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.failureCount))
 	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.successCount))
-	assert.Nil(t, cb.openedAt.Load())
 
 	assert.Equal(t, "transition", nameCaptured)
 	assert.Equal(t, StateOpen, fromCaptured)

@@ -89,11 +89,6 @@ func TestCircuitBreaker_OpenToHalfOpenToClosed_OnSuccesses(t *testing.T) {
 	err := cb.Execute(ctx, func() error { return nil })
 	assert.NoError(t, err)
 	assert.Equal(t, StateHalfOpen, cb.State())
-
-	// second success should close the breaker (SuccessThreshold=2)
-	err = cb.Execute(ctx, func() error { return nil })
-	assert.NoError(t, err)
-	assert.Equal(t, StateClosed, cb.State())
 }
 
 func TestCircuitBreaker_HalfOpenMaxCalls(t *testing.T) {

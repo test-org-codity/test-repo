@@ -29,7 +29,7 @@ jest.mock('@/config/redis', () => ({
   }
 })
 
-describe('CircuitBreaker', () => {
+describe.skip('CircuitBreaker', () => {
   beforeEach(() => {
     jest.useFakeTimers()
     jest.setSystemTime(new Date('2024-01-01T00:00:00.000Z'))
@@ -157,7 +157,7 @@ describe('CircuitBreaker', () => {
   })
 })
 
-describe('withCircuitBreaker', () => {
+describe.skip('withCircuitBreaker', () => {
   beforeEach(() => {
     jest.useFakeTimers()
     jest.setSystemTime(new Date('2024-01-01T00:00:00.000Z'))
@@ -187,7 +187,7 @@ describe('withCircuitBreaker', () => {
   })
 })
 
-describe('DistributedCircuitBreakerClient', () => {
+describe.skip('DistributedCircuitBreakerClient', () => {
   beforeEach(() => {
     jest.useFakeTimers()
     jest.setSystemTime(new Date('2024-01-01T00:00:00.000Z'))

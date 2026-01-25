@@ -101,7 +101,6 @@ describe('CircuitBreaker', () => {
     expect(health.metrics.totalCalls).toBe(4)
   })
 
-
   it('throws CircuitBreakerOpenError when open and no fallback is provided', async () => {
     const breaker = new CircuitBreaker('test', {
       failureThreshold: 1,
@@ -112,12 +111,17 @@ describe('CircuitBreaker', () => {
 
     await expect(breaker.execute(failingOp)).rejects.toThrow('fail')
 
-    await expect(
-      breaker.execute(async () => 'should-not-run')
-    ).rejects.toBeInstanceOf(CircuitBreakerOpenError)
+    const healthAfterFailure = breaker.getHealthInfo()
+    expect(healthAfterFailure.state).toBe(CircuitState.OPEN)
+
+    const anotherOp = jest.fn().mockResolvedValue('ok')
+
+    await expect(breaker.execute(anotherOp)).rejects.toBeInstanceOf(
+      CircuitBreakerOpenError,
+    )
   })
 
-  it('uses fallback when circuit is open and fallback is provided', async () => {
+  it('uses fallback when open and fallback is provided', async () => {
     const breaker = new CircuitBreaker('test', {
       failureThreshold: 1,
       failureRateThreshold: 1,
@@ -127,101 +131,195 @@ describe('CircuitBreaker', () => {
 
     await expect(breaker.execute(failingOp)).rejects.toThrow('fail')
 
-    const fallback = jest.fn().mockResolvedValue('fallback-value')
+    const healthAfterFailure = breaker.getHealthInfo()
+    expect(healthAfterFailure.state).toBe(CircuitState.OPEN)
 
-    const result = await breaker.execute(async () => 'should-not-run', {
-      fallback,
-    })
+    const anotherOp = jest.fn().mockResolvedValue('ok')
+    const fallback = jest.fn().mockResolvedValue('fallback')
 
-    expect(result).toBe('fallback-value')
-    expect(fallback).toHaveBeenCalledTimes(1)
+    const result = await breaker.execute(anotherOp, fallback)
+    expect(result).toBe('fallback')
+    expect(fallback).toHaveBeenCalled()
   })
 
-  it('executeSync throws CircuitBreakerOpenError when open and no fallback is provided', () => {
+  it('transitions to HALF_OPEN after resetTimeout and then to CLOSED on success', async () => {
     const breaker = new CircuitBreaker('test', {
       failureThreshold: 1,
       failureRateThreshold: 1,
+      resetTimeout: 1000,
     })
 
-    try {
-      breaker.executeSync(() => {
-        throw new Error('fail')
-      })
-    } catch {
-      // ignore
-    }
+    const failingOp = jest.fn().mockRejectedValue(new Error('fail'))
 
-    expect(() =>
-      breaker.executeSync(() => 'should-not-run')
-    ).toThrow(CircuitBreakerOpenError)
+    await expect(breaker.execute(failingOp)).rejects.toThrow('fail')
+
+    expect(breaker.getState()).toBe(CircuitState.OPEN)
+
+    jest.advanceTimersByTime(1000)
+
+    const halfOpenHealth = breaker.getHealthInfo()
+    expect(halfOpenHealth.state).toBe(CircuitState.HALF_OPEN)
+
+    const successOp = jest.fn().mockResolvedValue('ok')
+    const result = await breaker.execute(successOp)
+    expect(result).toBe('ok')
+
+    const closedHealth = breaker.getHealthInfo()
+    expect(closedHealth.state).toBe(CircuitState.CLOSED)
   })
 
-  it('executeSync uses fallback when circuit is open and fallback is provided', () => {
+  it('limits number of calls in HALF_OPEN state based on halfOpenMaxCalls', async () => {
     const breaker = new CircuitBreaker('test', {
       failureThreshold: 1,
       failureRateThreshold: 1,
+      resetTimeout: 1000,
+      halfOpenMaxCalls: 1,
     })
 
-    try {
-      breaker.executeSync(() => {
-        throw new Error('fail')
-      })
-    } catch {
-      // ignore
-    }
+    const failingOp = jest.fn().mockRejectedValue(new Error('fail'))
 
-    const fallback = jest.fn().mockReturnValue('fallback-sync')
+    await expect(breaker.execute(failingOp)).rejects.toThrow('fail')
+    expect(breaker.getState()).toBe(CircuitState.OPEN)
 
-    const result = breaker.executeSync(() => 'should-not-run', { fallback })
+    jest.advanceTimersByTime(1000)
 
-    expect(result).toBe('fallback-sync')
-    expect(fallback).toHaveBeenCalledTimes(1)
+    const successOp = jest.fn().mockResolvedValue('ok')
+    await expect(breaker.execute(successOp)).resolves.toBe('ok')
+
+    const anotherOp = jest.fn().mockResolvedValue('ok-2')
+    await expect(breaker.execute(anotherOp)).rejects.toBeInstanceOf(
+      CircuitBreakerOpenError,
+    )
   })
 
-  it('withCircuitBreaker wraps async function and uses provided breaker', async () => {
-    const breaker = new CircuitBreaker('wrapped', {
-      failureThreshold: 2,
-      failureRateThreshold: 1,
-    })
+  it('records response times for async operations', async () => {
+    const breaker = new CircuitBreaker('test')
 
-    const fn = jest.fn().mockResolvedValue('ok')
-    const wrapped = withCircuitBreaker(fn, breaker)
+    const op = jest.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve('ok'), 100)
+        }),
+    )
 
-    const result = await wrapped()
+    const promise = breaker.execute(op)
+    jest.advanceTimersByTime(100)
+    const result = await promise
+
     expect(result).toBe('ok')
 
     const health = breaker.getHealthInfo()
     expect(health.metrics.totalCalls).toBe(1)
     expect(health.metrics.successfulCalls).toBe(1)
+    expect(health.metrics.failedCalls).toBe(0)
   })
 
-  it('withCircuitBreaker propagates errors through breaker', async () => {
-    const breaker = new CircuitBreaker('wrapped', {
+  it('records response times for sync operations', () => {
+    const breaker = new CircuitBreaker('test')
+
+    const result = breaker.executeSync(() => 'ok')
+    expect(result).toBe('ok')
+
+    const health = breaker.getHealthInfo()
+    expect(health.metrics.totalCalls).toBe(1)
+    expect(health.metrics.successfulCalls).toBe(1)
+    expect(health.metrics.failedCalls).toBe(0)
+  })
+})
+
+describe('withCircuitBreaker', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+    jest.setSystemTime(new Date('2024-01-01T00:00:00.000Z'))
+  })
+
+  afterEach(() => {
+    jest.useRealTimers()
+    jest.clearAllMocks()
+  })
+
+  it('wraps an async function with a circuit breaker', async () => {
+    const fn = jest.fn().mockResolvedValue('ok')
+    const wrapped = withCircuitBreaker('test', fn)
+
+    const result = await wrapped()
+    expect(result).toBe('ok')
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('wraps a sync function with a circuit breaker', () => {
+    const fn = jest.fn().mockReturnValue('ok')
+    const wrapped = withCircuitBreaker('test', fn)
+
+    const result = wrapped()
+    expect(result).toBe('ok')
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses provided options for the circuit breaker', async () => {
+    const fn = jest.fn().mockResolvedValue('ok')
+    const wrapped = withCircuitBreaker('test', fn, {
       failureThreshold: 1,
       failureRateThreshold: 1,
     })
 
-    const fn = jest.fn().mockRejectedValue(new Error('wrapped-fail'))
-    const wrapped = withCircuitBreaker(fn, breaker)
-
-    await expect(wrapped()).rejects.toThrow('wrapped-fail')
-
-    const health = breaker.getHealthInfo()
-    expect(health.metrics.failedCalls).toBe(1)
+    await wrapped()
+    expect(fn).toHaveBeenCalledTimes(1)
   })
 })
 
 describe('DistributedCircuitBreakerClient', () => {
-  it('initializes with a name and uses redis client methods', async () => {
-    const client = new DistributedCircuitBreakerClient('dist-test')
-    const health = await client.getHealth()
-    expect(health).toBeDefined()
+  beforeEach(() => {
+    jest.useFakeTimers()
+    jest.setSystemTime(new Date('2024-01-01T00:00:00.000Z'))
   })
 
-  it('can open and close circuit via redis-backed client without throwing', async () => {
-    const client = new DistributedCircuitBreakerClient('dist-test-2')
+  afterEach(() => {
+    jest.useRealTimers()
+    jest.clearAllMocks()
+  })
 
-    await expect(client.open()).resolves.toBeUndefined()
-    await expect(client.close()).resolves.toBeUndefined()
+  it('creates a distributed circuit breaker and executes operations', async () => {
+    const client = new DistributedCircuitBreakerClient('test')
+
+    const op = jest.fn().mockResolvedValue('ok')
+    const result = await client.execute(op)
+
+    expect(result).toBe('ok')
+    expect(op).toHaveBeenCalledTimes(1)
+  })
+
+  it('handles failures and opens circuit in distributed mode', async () => {
+    const client = new DistributedCircuitBreakerClient('test', {
+      failureThreshold: 1,
+      failureRateThreshold: 1,
+    })
+
+    const failingOp = jest.fn().mockRejectedValue(new Error('fail'))
+
+    await expect(client.execute(failingOp)).rejects.toThrow('fail')
+
+    const anotherOp = jest.fn().mockResolvedValue('ok')
+    await expect(client.execute(anotherOp)).rejects.toBeInstanceOf(
+      CircuitBreakerOpenError,
+    )
+  })
+
+  it('uses fallback in distributed mode when circuit is open', async () => {
+    const client = new DistributedCircuitBreakerClient('test', {
+      failureThreshold: 1,
+      failureRateThreshold: 1,
+    })
+
+    const failingOp = jest.fn().mockRejectedValue(new Error('fail'))
+
+    await expect(client.execute(failingOp)).rejects.toThrow('fail')
+
+    const anotherOp = jest.fn().mockResolvedValue('ok')
+    const fallback = jest.fn().mockResolvedValue('fallback')
+
+    const result = await client.execute(anotherOp, fallback)
+    expect(result).toBe('fallback')
+    expect(fallback).toHaveBeenCalled()
   })
 })

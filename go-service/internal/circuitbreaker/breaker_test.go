@@ -146,9 +146,9 @@ func TestCircuitBreaker_ExecuteWithFallback(t *testing.T) {
 		SlidingWindowSize:    3,
 		FailureRateThreshold: 1.1,
 	}
-	cb := New("test-fallback", cfg)
 
 	// Case 1: breaker open -> fallback called and returns nil
+	cb := New("test-fallback", cfg)
 	cb.transitionTo(StateOpen)
 	cb.openedAt.Store(time.Now())
 	fallbackCalled := false
@@ -160,10 +160,10 @@ func TestCircuitBreaker_ExecuteWithFallback(t *testing.T) {
 	assert.True(t, fallbackCalled)
 
 	// Case 2: primary fails in Closed -> fallback called and returns error
-	cb.transitionTo(StateClosed)
+	cb2 := New("test-fallback-closed", cfg) // New instance starts in Closed
 	expectedErr := assert.AnError
 	fallbackCalled = false
-	err = cb.ExecuteWithFallback(context.Background(),
+	err = cb2.ExecuteWithFallback(context.Background(),
 		func() error { return assert.AnError },
 		func() error { fallbackCalled = true; return expectedErr },
 	)

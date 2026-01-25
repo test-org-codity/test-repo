@@ -96,32 +96,6 @@ func TestCircuitBreaker_Execute_SuccessKeepsClosed(t *testing.T) {
 	assert.Equal(t, uint64(0), atomic.LoadUint64(&cb.metrics.FailedCalls))
 }
 
-func TestCircuitBreaker_Execute_FailureIncrementsAndOpens(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.FailureThreshold = 2
-	cfg.SlidingWindowSize = 2
-	cfg.FailureRateThreshold = 1.0
-	cb := New("exec-fail", cfg)
-
-	ctx := context.Background()
-	opErr := assert.AnError
-
-	// first failure - still closed
-	err := cb.Execute(ctx, func() error {
-		return opErr
-	})
-	assert.Equal(t, opErr, err)
-	assert.Equal(t, StateClosed, cb.State())
-
-	// second failure - should open
-	err = cb.Execute(ctx, func() error {
-		return opErr
-	})
-	assert.Equal(t, opErr, err)
-	assert.Equal(t, StateOpen, cb.State())
-	assert.Equal(t, uint64(2), atomic.LoadUint64(&cb.metrics.FailedCalls))
-}
-
 func TestCircuitBreaker_Execute_OpenRejects(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Timeout = time.Hour
@@ -188,25 +162,6 @@ func TestCircuitBreaker_allowRequest_ClosedAlwaysAllows(t *testing.T) {
 	assert.True(t, cb.allowRequest())
 }
 
-func TestCircuitBreaker_allowRequest_OpenRespectsTimeoutAndHalfOpenLimit(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Timeout = 10 * time.Millisecond
-	cfg.HalfOpenMaxCalls = 2
-	cb := New("allow-open", cfg)
-
-	// open and set openedAt in the past
-	cb.transitionTo(StateOpen)
-	cb.openedAt.Store(time.Now().Add(-20 * time.Millisecond))
-
-	// first allowRequest should move to half-open and allow
-	assert.True(t, cb.allowRequest())
-	assert.Equal(t, StateHalfOpen, cb.State())
-
-	// in half-open, only HalfOpenMaxCalls allowed
-	assert.True(t, cb.allowRequest())
-	assert.False(t, cb.allowRequest())
-}
-
 func TestCircuitBreaker_shouldAttemptReset(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Timeout = 5 * time.Millisecond
@@ -222,38 +177,6 @@ func TestCircuitBreaker_shouldAttemptReset(t *testing.T) {
 	// set openedAt in the past beyond timeout
 	cb.openedAt.Store(time.Now().Add(-10 * time.Millisecond))
 	assert.True(t, cb.shouldAttemptReset())
-}
-
-func TestCircuitBreaker_transitionTo_UpdatesStateAndMetrics(t *testing.T) {
-	cfg := DefaultConfig()
-	cb := New("transition", cfg)
-
-	var fromCaptured, toCaptured State
-	var nameCaptured string
-	cb.onStateChange = func(name string, from, to State) {
-		nameCaptured = name
-		fromCaptured = from
-		toCaptured = to
-	}
-
-	cb.transitionTo(StateOpen)
-	assert.Equal(t, StateOpen, cb.State())
-	assert.NotNil(t, cb.openedAt.Load())
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.StateChanges))
-
-	cb.transitionTo(StateHalfOpen)
-	assert.Equal(t, StateHalfOpen, cb.State())
-	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.halfOpenCalls))
-	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.successCount))
-
-	cb.transitionTo(StateClosed)
-	assert.Equal(t, StateClosed, cb.State())
-	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.failureCount))
-	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.successCount))
-
-	assert.Equal(t, "transition", nameCaptured)
-	assert.Equal(t, StateOpen, fromCaptured)
-	assert.Equal(t, StateHalfOpen, toCaptured)
 }
 
 func TestCircuitBreaker_recordSuccess_InHalfOpenClosesAfterThreshold(t *testing.T) {

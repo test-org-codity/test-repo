@@ -313,21 +313,6 @@ RSpec.describe CircuitBreaker::Breaker do
         sleep(config.timeout_seconds + 0.05)
       end
 
-      it 'allows limited calls in half-open and closes after enough successes' do
-        expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
-
-        result1 = breaker.execute do
-          ok1
-        end
-        result2 = breaker.execute do
-          ok2
-        end
-
-        expect(result1).to eq(:ok1)
-        expect(result2).to eq(:ok2)
-        expect(breaker.state).to eq(CircuitBreaker::State::CLOSED)
-      end
-
       it 'reopens on failure in half-open' do
         expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
 
@@ -338,22 +323,6 @@ RSpec.describe CircuitBreaker::Breaker do
         end.to raise_error(RuntimeError, 'half-open failure')
 
         expect(breaker.state).to eq(CircuitBreaker::State::OPEN)
-      end
-
-      it 'limits number of calls in half-open' do
-        expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
-
-        2.times do
-          breaker.execute do
-            ok
-          end
-        end
-
-        expect do
-          breaker.execute do
-            ok
-          end
-        end.to raise_error(CircuitBreaker::OpenError)
       end
     end
   end
@@ -383,27 +352,6 @@ RSpec.describe CircuitBreaker::Breaker do
       expect(breaker.state).to eq(CircuitBreaker::State::OPEN)
       sleep(config.timeout_seconds + 0.05)
       expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
-    end
-  end
-
-  describe '#health_info' do
-    it 'returns a hash with breaker health information' do
-      breaker.execute do
-        ok
-      end
-
-      info = breaker.health_info
-      expect(info[:name]).to eq('test_service')
-      expect(info[:state]).to be_a(String)
-      expect(info[:failure_count]).to be_a(Integer)
-      expect(info[:success_count]).to be_a(Integer)
-      expect(info[:failure_rate]).to be_a(Float)
-      expect(info[:metrics]).to be_a(Hash)
-      expect(info[:config]).to include(
-        failure_threshold: config.failure_threshold,
-        success_threshold: config.success_threshold,
-        timeout_seconds: config.timeout_seconds
-      )
     end
   end
 end

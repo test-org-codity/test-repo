@@ -9,13 +9,23 @@ import org.junit.jupiter.api.DisplayName;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.net.http.HttpClient;
-import java.net.http.HttpResponse;
-import java.net.http.HttpRequest;
+import java.net.Authenticator;
+import java.net.CookieHandler;
+import java.net.ProxySelector;
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSession;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -76,6 +86,7 @@ class DistributedCircuitBreakerClientTest {
 
                         @Override
                         public T body() {
+                            // Provide an empty body according to the handler contract
                             return responseBodyHandler.apply(this).apply(java.nio.ByteBuffer.allocate(0));
                         }
 
@@ -202,7 +213,7 @@ class DistributedCircuitBreakerClientTest {
     @DisplayName("reportState should not throw exceptions for normal input")
     void testReportState_NoException() {
         CircuitBreaker<Object> breaker = distributedCircuitBreakerClient.getBreaker("reportService");
-        breaker.recordFailure(new RuntimeException("test failure"));
+        breaker.recordFailure());
 
         assertDoesNotThrow(() ->
                 distributedCircuitBreakerClient.reportState("reportService", breaker.getState(), breaker.getFailureCount())

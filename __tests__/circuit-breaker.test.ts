@@ -110,17 +110,16 @@ maybeDescribe('redis client behavior (mocked)', () => {
     expect(client.get).toHaveBeenCalledTimes(2)
   })
 
-  it('del removes keys and reports existence count', async () => {
+  it('del removes keys and reports 1 if existed, 0 otherwise', async () => {
     const client = await getRedisClient()
-
-    expect(await client.del('nope')).toBe(0)
 
     await client.set('k2', 'v2')
     expect(await client.del('k2')).toBe(1)
     expect(await client.get('k2')).toBeNull()
+    expect(await client.del('k2')).toBe(0)
 
-    expect(client.del).toHaveBeenCalledTimes(2)
     expect(client.set).toHaveBeenCalledTimes(1)
+    expect(client.del).toHaveBeenCalledTimes(2)
     expect(client.get).toHaveBeenCalledTimes(1)
   })
 

@@ -315,16 +315,16 @@ def test_circuit_breaker__record_failure_half_open_opens_immediately(breaker):
     """
     Test _record_failure in HALF_OPEN transitions back to OPEN.
 
-    Fix: some implementations move HALF_OPEN -> OPEN only when the state machine is re-evaluated
-    (e.g., via .state property). Ensure we trigger that evaluation while time is patched.
+    Some implementations auto-transition OPEN->HALF_OPEN as soon as timeout has elapsed, and may
+    use real time when assertions run. Keep time patched across both the failure record and state
+    access/assertions.
     """
     breaker._transition_to(CircuitState.HALF_OPEN)
     with patch("src.circuit_breaker.time.time", return_value=400.0):
         breaker._record_failure(0.5)
-        _ = breaker.state  # ensure any lazy transition happens under the same timestamp
+        assert breaker.state == CircuitState.OPEN
+        assert breaker._opened_at == pytest.approx(400.0)
 
-    assert breaker.state == CircuitState.OPEN
-    assert breaker._opened_at == pytest.approx(400.0)
     assert breaker.metrics.failed_calls == 1
 
 
@@ -332,8 +332,8 @@ def test_circuit_breaker__record_failure_closed_opens_on_failure_threshold(break
     """
     Test _record_failure transitions to OPEN when failure_threshold is reached.
 
-    Fix: some implementations immediately transition CLOSED -> OPEN -> HALF_OPEN if timeout check uses
-    time.time() and is evaluated with an inconsistent/unpatched timestamp. Keep evaluation under patch.
+    Keep time patched through state assertions to avoid OPEN->HALF_OPEN auto-transition due to
+    real time being far ahead of opened_at.
     """
     breaker.config.failure_threshold = 2
     breaker.config.sliding_window_size = 10  # keep default behavior
@@ -343,10 +343,8 @@ def test_circuit_breaker__record_failure_closed_opens_on_failure_threshold(break
         breaker._record_failure(0.01)
         assert breaker.state == CircuitState.CLOSED
         breaker._record_failure(0.01)
-        _ = breaker.state  # ensure transition is applied consistently
-
-    assert breaker.state == CircuitState.OPEN
-    assert breaker._opened_at == pytest.approx(500.0)
+        assert breaker.state == CircuitState.OPEN
+        assert breaker._opened_at == pytest.approx(500.0)
 
 
 def test_circuit_breaker__calculate_failure_rate_returns_zero_until_window_full(breaker_small_window):
@@ -377,8 +375,7 @@ def test_circuit_breaker__record_failure_closed_opens_on_failure_rate_threshold(
     """
     Test _record_failure opens circuit if sliding-window failure rate exceeds threshold.
 
-    Fix: ensure any lazy state evaluation happens while time is patched so OPEN doesn't immediately
-    become HALF_OPEN due to timeout logic using an unpatched timestamp.
+    Keep time patched through assertions to prevent immediate OPEN->HALF_OPEN transition.
     """
     b = breaker_small_window
     b.config.failure_rate_threshold = 0.5
@@ -390,11 +387,9 @@ def test_circuit_breaker__record_failure_closed_opens_on_failure_rate_threshold(
         b._record_success(0.01)  # window: F F T
         assert b.state == CircuitState.CLOSED  # not full yet => rate 0.0
         b._record_failure(0.01)  # window full: F F T F => rate 0.75 => open
-        _ = b.state  # apply transition consistently under patched time
-
-    assert b.state == CircuitState.OPEN
-    assert b._calculate_failure_rate() == pytest.approx(3 / 4)
-    assert b._opened_at == pytest.approx(10.0)
+        assert b.state == CircuitState.OPEN
+        assert b._calculate_failure_rate() == pytest.approx(3 / 4)
+        assert b._opened_at == pytest.approx(10.0)
 
 
 def test_circuit_breaker__record_success_closed_decrements_failure_count_not_below_zero(breaker):

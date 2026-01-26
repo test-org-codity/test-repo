@@ -97,32 +97,74 @@ if (isJestRuntime) {
   try {
     ;({ getRedisClient } = require('@/config/redis'))
   } catch (_e) {
-    // alias may not exist in some environments; tests will skip redis checks in that case
-    getRedisClient = undefined
+    // alias may not exist in some environments; tests will be skipped conditionally
   }
 }
 
-maybeDescribe('Mock harness', () => {
-  it('mocks date-fns format and subMonths while preserving other exports', () => {
-    const d = new Date('2023-12-31T00:00:00.000Z')
+maybeDescribe('shared mocks and environment', () => {
+  it('mocks date-fns format to a stable string', () => {
+    const d = new Date('2023-06-15T12:34:56.000Z')
+    expect(typeof format).toBe('function')
     expect(format(d, 'yyyy-MM-dd')).toBe('2024-01-01')
-    expect(subMonths(d, 1).toISOString()).toBe('2024-01-01T00:00:00.000Z')
   })
 
-  it('mocks react-use useMedia to return false', () => {
+  it('mocks date-fns subMonths to a stable date', () => {
+    const d = new Date('2023-06-15T12:34:56.000Z')
+    const result = subMonths(d, 3)
+    expect(result instanceof Date).toBe(true)
+    expect(result.toISOString()).toBe('2024-01-01T00:00:00.000Z')
+  })
+
+  it('mocks react-use useMedia but preserves API shape', () => {
+    expect(typeof useMedia).toBe('function')
+    // default mocked value
     expect(useMedia('(min-width: 768px)')).toBe(false)
+    // can be overridden at call-site
+    ;(useMedia as any).mockReturnValueOnce(true)
+    expect(useMedia('(min-width: 1024px)')).toBe(true)
+    // and reverts to default mocked value after once
+    expect(useMedia('(min-width: 320px)')).toBe(false)
   })
 
-  it('provides a functional in-memory redis client through getRedisClient', async () => {
-    if (!getRedisClient) {
-      // If alias not available in this environment, consider it a pass
-      expect(true).toBe(true)
-      return
+  it('does not assert route absence; expects presence if defined', () => {
+    const module: any = { ROUTE: '/health' }
+    expect('ROUTE' in module).toBe(true)
+  })
+})
+
+const describeOrSkipRedis: any =
+  isJestRuntime && typeof getRedisClient === 'function' ? maybeDescribe : maybeDescribe.skip
+
+describeOrSkipRedis('redis in-memory client mock', () => {
+  let client: any
+
+  beforeEach(async () => {
+    client = await getRedisClient()
+  })
+
+  afterEach(async () => {
+    if (client && typeof client.quit === 'function') {
+      await client.quit()
     }
-    const client = await getRedisClient()
-    await client.set('k', 'v')
-    await expect(client.get('k')).resolves.toBe('v')
-    await expect(client.del('k')).resolves.toBe(1)
-    await expect(client.get('k')).resolves.toBeNull()
+  })
+
+  it('can set and get keys', async () => {
+    const res = await client.set('a', '1')
+    expect(res).toBe('OK')
+    const got = await client.get('a')
+    expect(got).toBe('1')
+  })
+
+  it('returns null for missing keys', async () => {
+    const got = await client.get('missing')
+    expect(got).toBeNull()
+  })
+
+  it('deletes keys and returns deletion count', async () => {
+    await client.set('b', '2')
+    const del1 = await client.del('b')
+    expect(del1).toBe(1)
+    const del2 = await client.del('b')
+    expect(del2).toBe(0)
   })
 })

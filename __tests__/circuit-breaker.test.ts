@@ -1,31 +1,15 @@
 const { describe, it, expect, jest, afterEach } = require('@jest/globals')
 
-jest.mock('date-fns', () => {
-  let actual = {}
-  try {
-    actual = jest.requireActual('date-fns')
-  } catch (_e) {
-    // ignore if actual cannot be resolved
-  }
-  return {
-    ...actual,
-    format: jest.fn((_date, _fmt) => '2024-01-01'),
-    subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
-  }
-})
+jest.mock('date-fns', () => ({
+  ...jest.requireActual('date-fns'),
+  format: jest.fn((_date, _fmt) => '2024-01-01'),
+  subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
+}))
 
-jest.mock('react-use', () => {
-  let actual = {}
-  try {
-    actual = jest.requireActual('react-use')
-  } catch (_e) {
-    // ignore if actual cannot be resolved
-  }
-  return {
-    ...actual,
-    useMedia: jest.fn(() => false),
-  }
-})
+jest.mock('react-use', () => ({
+  ...jest.requireActual('react-use'),
+  useMedia: jest.fn(() => false),
+}))
 
 jest.mock('@/config/redis', () => {
   let actual = {}
@@ -34,6 +18,7 @@ jest.mock('@/config/redis', () => {
   } catch (_e) {
     // ignore if actual cannot be resolved
   }
+
   const store = {}
   const client = {
     get: jest.fn(async (key) => (Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null)),
@@ -48,6 +33,7 @@ jest.mock('@/config/redis', () => {
     }),
     quit: jest.fn(async () => 'OK'),
   }
+
   return {
     ...actual,
     getRedisClient: jest.fn().mockResolvedValue(client),
@@ -83,4 +69,22 @@ describe('external dependency mocks behave deterministically', () => {
 })
 
 describe('redis client behavior (mocked)', () => {
+  it('set/get roundtrip works and returns null for missing keys', async () => {
+    const client = await getRedisClient()
+
+    await client.set('k1', 'v1')
+    expect(await client.get('k1')).toBe('v1')
+    expect(await client.get('missing')).toBeNull()
+
+    expect(client.set).toHaveBeenCalledWith('k1', 'v1')
+    expect(client.get).toHaveBeenCalled()
+  })
+
+  it('del returns 1 when key existed and 0 otherwise', async () => {
+    const client = await getRedisClient()
+
+    await client.set('k2', 'v2')
+    await expect(client.del('k2')).resolves.toBe(1)
+    await expect(client.del('k2')).resolves.toBe(0)
+  })
 })

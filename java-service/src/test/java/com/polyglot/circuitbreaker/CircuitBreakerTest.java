@@ -11,27 +11,34 @@ import static org.junit.jupiter.api.Assertions.*;
 @DisplayName("CircuitBreaker Tests")
 class CircuitBreakerTest {
 
-    private CircuitBreaker<String> circuitBreaker;
+    private CircuitBreaker<Integer> cb;
+    private String name;
+    private java.time.Duration timeout;
+    private java.time.Duration halfOpenTimeout;
 
     @BeforeEach
     void setUp() {
-        circuitBreaker = new CircuitBreaker<>("test-cb", 2, 2, java.time.Duration.ofMillis(150), java.time.Duration.ofMillis(50));
+        name = "cb-" + System.nanoTime();
+        timeout = java.time.Duration.ofMillis(100);
+        halfOpenTimeout = java.time.Duration.ofMillis(50);
+        cb = new CircuitBreaker<>(name, 2, 2, timeout, halfOpenTimeout);
     }
 
     @AfterEach
     void tearDown() {
-        circuitBreaker = null;
+        cb = null;
     }
 
     @Test
-    @DisplayName("Constructor initializes CLOSED state and default metrics")
-    void testConstructorAndInitialState() {
-        assertNotNull(circuitBreaker);
-        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
-        assertTrue(circuitBreaker.allowRequest());
+    @DisplayName("Initial state should be CLOSED with zero counts and default metrics")
+    void testInitialStateAndMetrics() {
+        assertNotNull(cb);
+        assertEquals(CircuitBreaker.State.CLOSED, cb.getState());
+        assertTrue(cb.allowRequest());
+        assertEquals(0, cb.getFailureCount());
 
-        CircuitBreaker.CircuitBreakerMetrics metrics = circuitBreaker.getMetrics();
-        assertEquals("test-cb", metrics.name());
+        CircuitBreaker.CircuitBreakerMetrics metrics = cb.getMetrics();
+        assertEquals(name, metrics.name());
         assertEquals(CircuitBreaker.State.CLOSED, metrics.state());
         assertEquals(0, metrics.failureCount());
         assertEquals(0, metrics.successCount());
@@ -40,187 +47,185 @@ class CircuitBreakerTest {
     }
 
     @Test
-    @DisplayName("execute returns result and remains CLOSED on success")
-    void testExecute_SuccessInClosed() {
-        String result = circuitBreaker.execute(() -> "ok");
-        assertEquals("ok", result);
-        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
-        assertEquals(0, circuitBreaker.getFailureCount());
-    }
+    @DisplayName("execute should return result on success and keep CLOSED state")
+    void testExecute_Success() {
+        Integer result = cb.execute(() -> 123);
+        assertEquals(123, result);
+        assertEquals(CircuitBreaker.State.CLOSED, cb.getState());
+        assertEquals(0, cb.getFailureCount());
 
-    @Test
-    @DisplayName("execute rethrows exception and increments failure count in CLOSED")
-    void testExecute_FailureInClosed_IncrementsCountAndRethrows() {
-        RuntimeException ex = assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("fail"); })
-        );
-        assertEquals("fail", ex.getMessage());
-        assertEquals(1, circuitBreaker.getFailureCount());
-        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
-    }
-
-    @Test
-    @DisplayName("Transitions to OPEN after reaching failure threshold and rejects calls")
-    void testOpenAfterThresholdFailuresAndRejectsCalls() {
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom1"); })
-        );
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom2"); })
-        );
-
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
-        assertFalse(circuitBreaker.allowRequest());
-        assertNotNull(circuitBreaker.getMetrics().openedAt());
-
-        assertThrows(CircuitBreaker.CircuitBreakerOpenException.class, () ->
-            circuitBreaker.execute(() -> "value")
-        );
-    }
-
-    @Test
-    @DisplayName("allowRequest moves to HALF_OPEN after timeout elapses")
-    void testAllowRequestBecomesHalfOpenAfterTimeout() throws InterruptedException {
-        // Open the breaker
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom1"); })
-        );
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom2"); })
-        );
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
-
-        // Before timeout: still not allowed
-        assertFalse(circuitBreaker.allowRequest());
-
-        // After timeout: should move to HALF_OPEN and allow one probe
-        Thread.sleep(200);
-        boolean allowed = circuitBreaker.allowRequest();
-        assertTrue(allowed);
-        assertEquals(CircuitBreaker.State.HALF_OPEN, circuitBreaker.getState());
-        assertEquals(0, circuitBreaker.getMetrics().successCount());
-    }
-
-    @Test
-    @DisplayName("In HALF_OPEN, enough successes transition to CLOSED and reset counters")
-    void testHalfOpenSuccessesCloseBreaker() throws InterruptedException {
-        // Open the breaker
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom1"); })
-        );
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom2"); })
-        );
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
-
-        // Wait for timeout and perform two successful probes
-        Thread.sleep(200);
-        String r1 = circuitBreaker.execute(() -> "ok1");
-        assertEquals("ok1", r1);
-        assertEquals(CircuitBreaker.State.HALF_OPEN, circuitBreaker.getState());
-
-        String r2 = circuitBreaker.execute(() -> "ok2");
-        assertEquals("ok2", r2);
-        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
-        assertEquals(0, circuitBreaker.getFailureCount());
-        assertNull(circuitBreaker.getMetrics().openedAt());
-    }
-
-    @Test
-    @DisplayName("In HALF_OPEN, a failure transitions back to OPEN and sets openedAt")
-    void testHalfOpenFailureReopensBreaker() throws InterruptedException {
-        // Open the breaker
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom1"); })
-        );
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom2"); })
-        );
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
-
-        // Wait for timeout then attempt failing probe
-        Thread.sleep(200);
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("probe-fail"); })
-        );
-
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
-        assertNotNull(circuitBreaker.getMetrics().openedAt());
-    }
-
-    @Test
-    @DisplayName("recordSuccess in CLOSED resets failure count")
-    void testRecordSuccessInClosedResetsFailureCount() {
-        circuitBreaker.recordFailure();
-        assertEquals(1, circuitBreaker.getFailureCount());
-        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
-
-        circuitBreaker.recordSuccess();
-        assertEquals(0, circuitBreaker.getFailureCount());
-        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
-    }
-
-    @Test
-    @DisplayName("getOrCreate returns same instance for same name and different for different names")
-    void testGetOrCreate_ReturnsSingletonPerName() {
-        CircuitBreaker<String> a = CircuitBreaker.getOrCreate("shared-name-1", 3, 2, java.time.Duration.ofMillis(100));
-        CircuitBreaker<String> b = CircuitBreaker.getOrCreate("shared-name-1", 5, 5, java.time.Duration.ofMillis(1));
-        assertSame(a, b);
-
-        CircuitBreaker<String> c = CircuitBreaker.getOrCreate("shared-name-2", 3, 2, java.time.Duration.ofMillis(100));
-        assertNotSame(a, c);
-    }
-
-    @Test
-    @DisplayName("Factory create() returns a CLOSED breaker allowing requests")
-    void testCreateFactoryMethod() {
-        CircuitBreaker<String> created = CircuitBreaker.create("factory-cb");
-        assertNotNull(created);
-        assertEquals(CircuitBreaker.State.CLOSED, created.getState());
-        assertTrue(created.allowRequest());
-    }
-
-    @Test
-    @DisplayName("Metrics reflect latest failure and state")
-    void testMetricsAfterFailure() {
-        circuitBreaker.recordFailure();
-        CircuitBreaker.CircuitBreakerMetrics metrics = circuitBreaker.getMetrics();
-
-        assertEquals("test-cb", metrics.name());
-        assertEquals(CircuitBreaker.State.CLOSED, metrics.state());
-        assertEquals(1, metrics.failureCount());
+        CircuitBreaker.CircuitBreakerMetrics metrics = cb.getMetrics();
         assertEquals(0, metrics.successCount());
-        assertTrue(metrics.lastFailureTime().isAfter(java.time.Instant.MIN));
+        assertEquals(java.time.Instant.MIN, metrics.lastFailureTime());
         assertNull(metrics.openedAt());
     }
 
     @Test
-    @DisplayName("In OPEN state before timeout, allowRequest returns false")
-    void testAllowRequestOpenBeforeTimeoutFalse() {
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom1"); })
-        );
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom2"); })
-        );
+    @DisplayName("execute failures should increment failure count and OPEN at threshold")
+    void testExecute_FailureIncrementsAndOpensAtThreshold() {
+        assertThrows(RuntimeException.class, () -> cb.execute(() -> {
+            throw new RuntimeException("boom1");
+        }));
+        assertEquals(1, cb.getFailureCount());
+        assertEquals(CircuitBreaker.State.CLOSED, cb.getState());
 
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
-        assertFalse(circuitBreaker.allowRequest());
+        assertThrows(RuntimeException.class, () -> cb.execute(() -> {
+            throw new RuntimeException("boom2");
+        }));
+        assertEquals(CircuitBreaker.State.OPEN, cb.getState());
+
+        CircuitBreaker.CircuitBreakerMetrics metrics = cb.getMetrics();
+        assertTrue(metrics.lastFailureTime().isAfter(java.time.Instant.MIN));
+        assertNotNull(metrics.openedAt());
     }
 
     @Test
-    @DisplayName("execute throws CircuitBreakerOpenException when OPEN and not timed out")
-    void testExecuteThrowsWhenOpen() {
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom1"); })
-        );
-        assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom2"); })
-        );
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
+    @DisplayName("execute should throw CircuitBreakerOpenException when OPEN")
+    void testExecute_WhenOpenThrowsCircuitBreakerOpenException() {
+        // Open the breaker
+        assertThrows(RuntimeException.class, () -> cb.execute(() -> {
+            throw new RuntimeException("f1");
+        }));
+        assertThrows(RuntimeException.class, () -> cb.execute(() -> {
+            throw new RuntimeException("f2");
+        }));
+        assertEquals(CircuitBreaker.State.OPEN, cb.getState());
 
-        assertThrows(CircuitBreaker.CircuitBreakerOpenException.class, () ->
-            circuitBreaker.execute(() -> "should-not-run")
-        );
+        // Should be blocked
+        assertThrows(CircuitBreaker.CircuitBreakerOpenException.class, () -> cb.execute(() -> 42));
+    }
+
+    @Test
+    @DisplayName("allowRequest should transition to HALF_OPEN after timeout when OPEN")
+    void testAllowRequest_TransitionsToHalfOpenAfterTimeout() throws InterruptedException {
+        // Open the breaker
+        assertThrows(RuntimeException.class, () -> cb.execute(() -> {
+            throw new RuntimeException("f1");
+        }));
+        assertThrows(RuntimeException.class, () -> cb.execute(() -> {
+            throw new RuntimeException("f2");
+        }));
+        assertEquals(CircuitBreaker.State.OPEN, cb.getState());
+        assertFalse(cb.allowRequest());
+
+        // Wait for timeout to elapse
+        Thread.sleep(timeout.toMillis() + 50);
+
+        boolean allowed = cb.allowRequest();
+        assertTrue(allowed);
+        assertEquals(CircuitBreaker.State.HALF_OPEN, cb.getState());
+    }
+
+    @Test
+    @DisplayName("Two successful operations in HALF_OPEN should CLOSE and reset counts")
+    void testHalfOpen_SuccessesCloseAndResetCounts() throws InterruptedException {
+        // Open the breaker
+        assertThrows(RuntimeException.class, () -> cb.execute(() -> {
+            throw new RuntimeException("f1");
+        }));
+        assertThrows(RuntimeException.class, () -> cb.execute(() -> {
+            throw new RuntimeException("f2");
+        }));
+        assertEquals(CircuitBreaker.State.OPEN, cb.getState());
+
+        // Wait and perform first successful trial -> remains HALF_OPEN
+        Thread.sleep(timeout.toMillis() + 50);
+        Integer v1 = cb.execute(() -> 1);
+        assertEquals(1, v1);
+        assertEquals(CircuitBreaker.State.HALF_OPEN, cb.getState());
+        CircuitBreaker.CircuitBreakerMetrics afterFirst = cb.getMetrics();
+        assertEquals(1, afterFirst.successCount());
+
+        // Second success -> should CLOSE and reset counts
+        Integer v2 = cb.execute(() -> 2);
+        assertEquals(2, v2);
+        assertEquals(CircuitBreaker.State.CLOSED, cb.getState());
+        assertEquals(0, cb.getFailureCount());
+        CircuitBreaker.CircuitBreakerMetrics afterClose = cb.getMetrics();
+        assertEquals(0, afterClose.successCount());
+        assertNull(afterClose.openedAt());
+    }
+
+    @Test
+    @DisplayName("Failure in HALF_OPEN should immediately reopen to OPEN")
+    void testHalfOpen_FailureReopensImmediately() throws InterruptedException {
+        // Open the breaker
+        assertThrows(RuntimeException.class, () -> cb.execute(() -> {
+            throw new RuntimeException("f1");
+        }));
+        assertThrows(RuntimeException.class, () -> cb.execute(() -> {
+            throw new RuntimeException("f2");
+        }));
+        assertEquals(CircuitBreaker.State.OPEN, cb.getState());
+
+        // Wait for timeout, then fail once in HALF_OPEN -> should go back to OPEN
+        Thread.sleep(timeout.toMillis() + 50);
+        assertThrows(RuntimeException.class, () -> cb.execute(() -> {
+            throw new RuntimeException("trial-failure");
+        }));
+        assertEquals(CircuitBreaker.State.OPEN, cb.getState());
+        assertNotNull(cb.getMetrics().openedAt());
+    }
+
+    @Test
+    @DisplayName("recordSuccess should reset failure count when CLOSED")
+    void testRecordSuccess_ResetsFailuresInClosed() {
+        cb.recordFailure();
+        assertEquals(1, cb.getFailureCount());
+        assertEquals(CircuitBreaker.State.CLOSED, cb.getState());
+
+        cb.recordSuccess();
+        assertEquals(0, cb.getFailureCount());
+        assertEquals(CircuitBreaker.State.CLOSED, cb.getState());
+    }
+
+    @Test
+    @DisplayName("getOrCreate should return the same instance for the same name")
+    void testGetOrCreate_ReturnsSameInstanceForSameName() {
+        String sharedName = "shared-" + System.nanoTime();
+        CircuitBreaker<String> c1 = CircuitBreaker.getOrCreate(sharedName, 3, 2, java.time.Duration.ofMillis(50));
+        CircuitBreaker<String> c2 = CircuitBreaker.getOrCreate(sharedName, 10, 5, java.time.Duration.ofSeconds(1));
+
+        assertSame(c1, c2);
+        assertEquals("ok", c1.execute(() -> "ok"));
+        assertEquals(CircuitBreaker.State.CLOSED, c1.getState());
+    }
+
+    @Test
+    @DisplayName("Factory create should produce a CLOSED breaker that executes successfully")
+    void testCreateFactory_ProducesClosedBreaker() {
+        CircuitBreaker<String> defaultCb = CircuitBreaker.create("default-" + System.nanoTime());
+        assertEquals(CircuitBreaker.State.CLOSED, defaultCb.getState());
+        assertEquals("value", defaultCb.execute(() -> "value"));
+    }
+
+    @Test
+    @DisplayName("Metrics should reflect lastFailureTime and openedAt across transitions")
+    void testMetricsReflectStateAndTimestamps() {
+        // One failure -> still CLOSED; lastFailureTime updated; openedAt null
+        cb.recordFailure();
+        CircuitBreaker.CircuitBreakerMetrics m1 = cb.getMetrics();
+        assertEquals(CircuitBreaker.State.CLOSED, m1.state());
+        assertEquals(1, m1.failureCount());
+        assertTrue(m1.lastFailureTime().isAfter(java.time.Instant.MIN));
+        assertNull(m1.openedAt());
+
+        // Next failure -> OPEN; openedAt set
+        cb.recordFailure();
+        CircuitBreaker.CircuitBreakerMetrics m2 = cb.getMetrics();
+        assertEquals(CircuitBreaker.State.OPEN, m2.state());
+        assertNotNull(m2.openedAt());
+    }
+
+    @Test
+    @DisplayName("allowRequest should be true in CLOSED and false in OPEN before timeout")
+    void testAllowRequest_ClosedTrueOpenFalseBeforeTimeout() {
+        assertTrue(cb.allowRequest());
+
+        // Open the breaker
+        cb.recordFailure();
+        cb.recordFailure();
+        assertEquals(CircuitBreaker.State.OPEN, cb.getState());
+        assertFalse(cb.allowRequest());
     }
 }

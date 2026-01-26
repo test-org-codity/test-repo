@@ -1,7 +1,7 @@
-import { describe, it, expect, jest, afterEach } from '@jest/globals'
+const { describe, it, expect, jest, afterEach } = require('@jest/globals')
 
 jest.mock('date-fns', () => {
-  let actual: any = {}
+  let actual = {}
   try {
     actual = jest.requireActual('date-fns')
   } catch {
@@ -15,7 +15,7 @@ jest.mock('date-fns', () => {
 })
 
 jest.mock('react-use', () => {
-  let actual: any = {}
+  let actual = {}
   try {
     actual = jest.requireActual('react-use')
   } catch {
@@ -28,20 +28,20 @@ jest.mock('react-use', () => {
 })
 
 jest.mock('@/config/redis', () => {
-  let actual: any = {}
+  let actual = {}
   try {
     actual = jest.requireActual('@/config/redis')
   } catch {
     // ignore if actual cannot be resolved
   }
-  const store: Record<string, string> = {}
+  const store = {}
   const client = {
-    get: jest.fn(async (key: string) => (Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null)),
-    set: jest.fn(async (key: string, value: string) => {
+    get: jest.fn(async (key) => (Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null)),
+    set: jest.fn(async (key, value) => {
       store[key] = value
       return 'OK'
     }),
-    del: jest.fn(async (key: string) => {
+    del: jest.fn(async (key) => {
       const existed = Object.prototype.hasOwnProperty.call(store, key) ? 1 : 0
       delete store[key]
       return existed

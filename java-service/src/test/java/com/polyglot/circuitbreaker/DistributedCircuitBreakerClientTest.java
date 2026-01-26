@@ -1,10 +1,9 @@
 package com.polyglot.circuitbreaker;
 
-import com.polyglot.circuitbreaker.DistributedCircuitBreakerClient;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 

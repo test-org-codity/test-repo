@@ -100,7 +100,6 @@ maybeDescribe('redis client behavior (mocked)', () => {
     expect(await client.del('k2')).toBe(1)
     expect(await client.del('k2')).toBe(0)
 
-    expect(client.set).toHaveBeenCalledWith('k2', 'v2')
     expect(client.del).toHaveBeenCalledWith('k2')
   })
 

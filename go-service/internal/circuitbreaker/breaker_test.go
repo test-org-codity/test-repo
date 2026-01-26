@@ -121,18 +121,25 @@ func TestCircuitBreaker_Execute_SuccessUpdatesMetricsAndWindow(t *testing.T) {
 }
 
 func TestCircuitBreaker_Execute_FailureOpensOnFailureThreshold(t *testing.T) {
+	// Rewrite to match source-code behavior exactly.
+	// Key behaviors:
+	// - TotalCalls increments only when a request is allowed.
+	// - FailureCount increments on failures; when >= FailureThreshold, transitions to OPEN.
+	// - Metrics.FailedCalls increments on failures.
 	cfg := DefaultConfig()
 	cfg.FailureThreshold = 2
-	cfg.FailureRateThreshold = 1.0
+	cfg.FailureRateThreshold = 1.0 // avoid opening early due to default sliding-window values
 	cfg.SlidingWindowSize = 4
 	cb := New("svc", cfg)
 
 	sentinel := errors.New("boom")
 
+	// First failure: still CLOSED.
 	err := cb.Execute(context.Background(), func() error { return sentinel })
 	assert.ErrorIs(t, err, sentinel)
 	assert.Equal(t, StateClosed, cb.State())
 
+	// Second failure: reaches threshold => OPEN.
 	err = cb.Execute(context.Background(), func() error { return sentinel })
 	assert.ErrorIs(t, err, sentinel)
 	assert.Equal(t, StateOpen, cb.State())
@@ -140,6 +147,7 @@ func TestCircuitBreaker_Execute_FailureOpensOnFailureThreshold(t *testing.T) {
 	assert.Equal(t, uint64(2), atomic.LoadUint64(&cb.metrics.TotalCalls))
 	assert.Equal(t, uint64(0), atomic.LoadUint64(&cb.metrics.SuccessfulCalls))
 	assert.Equal(t, uint64(2), atomic.LoadUint64(&cb.metrics.FailedCalls))
+	assert.Equal(t, uint64(0), atomic.LoadUint64(&cb.metrics.RejectedCalls))
 
 	cb.metrics.mu.RLock()
 	lastFailure := cb.metrics.LastFailure

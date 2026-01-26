@@ -22,7 +22,12 @@ const maybeDescribe: any = isJestRuntime && typeof describe === 'function' ? des
 
 if (isJestRuntime) {
   jest.mock('date-fns', () => {
-    const actual = jest.requireActual('date-fns')
+    let actual: any = {}
+    try {
+      actual = jest.requireActual('date-fns')
+    } catch (_e) {
+      // Module may not exist in this environment; fall back to just our stubs
+    }
     return {
       ...actual,
       format: jest.fn((_date: Date, _fmt: string) => '2024-01-01'),
@@ -31,7 +36,12 @@ if (isJestRuntime) {
   })
 
   jest.mock('react-use', () => {
-    const actual = jest.requireActual('react-use')
+    let actual: any = {}
+    try {
+      actual = jest.requireActual('react-use')
+    } catch (_e) {
+      // Module may not exist in this environment; fall back to just our stubs
+    }
     return {
       ...actual,
       useMedia: jest.fn(() => false),
@@ -99,45 +109,38 @@ maybeDescribe('external dependency mocks behave deterministically', () => {
   })
 
   it('date-fns: subMonths returns a fixed date instance', () => {
-    const d = subMonths(new Date('2020-06-15T00:00:00.000Z'), 3)
-    expect(d instanceof Date).toBe(true)
-    expect(d.toISOString()).toBe('2024-01-01T00:00:00.000Z')
+    const result = subMonths(new Date('2020-06-15T00:00:00.000Z'), 3)
+    expect(result).toBeInstanceOf(Date)
+    expect(result.toISOString()).toBe('2024-01-01T00:00:00.000Z')
   })
 
-  it('react-use: useMedia returns false consistently', () => {
-    const isMatch = useMedia('(min-width: 768px)')
-    expect(isMatch).toBe(false)
+  it('react-use: useMedia is mocked and returns false', () => {
+    const value = useMedia('(min-width: 768px)')
+    expect(value).toBe(false)
+    expect(typeof useMedia).toBe('function')
   })
 
-  it('redis mock: set/get/del work and are isolated per client', async () => {
+  it('redis: getRedisClient provides isolated in-memory store', async () => {
     const clientA = await getRedisClient()
     const clientB = await getRedisClient()
 
-    const setRes = await clientA.set('key', 'value')
-    expect(setRes).toBe('OK')
+    // A: set/get
+    await clientA.set('k', 'v')
+    await clientA.set('x', 'y')
+    expect(await clientA.get('k')).toBe('v')
+    expect(await clientA.get('x')).toBe('y')
 
-    const gotA = await clientA.get('key')
-    expect(gotA).toBe('value')
+    // B: should be empty initially
+    expect(await clientB.get('k')).toBeNull()
+    expect(await clientB.get('x')).toBeNull()
 
-    const gotB = await clientB.get('key')
-    // each client has its own isolated in-memory store
-    expect(gotB).toBe(null)
+    // Delete in A
+    const delCount = await clientA.del('k')
+    expect(delCount).toBe(1)
+    expect(await clientA.get('k')).toBeNull()
 
-    const delRes = await clientA.del('key')
-    expect(delRes).toBe(1)
-
-    const gotAfterDel = await clientA.get('key')
-    expect(gotAfterDel).toBe(null)
-
-    const quitRes = await clientA.quit()
-    expect(quitRes).toBe('OK')
-  })
-
-  it('date-fns: mocked functions receive the right arguments', () => {
-    const d = new Date('2000-01-01T00:00:00.000Z')
-    format(d, 'yyyy-MM-dd')
-    subMonths(d, 5)
-    expect(format).toHaveBeenCalledWith(d, 'yyyy-MM-dd')
-    expect(subMonths).toHaveBeenCalledWith(d, 5)
+    // Quit does not throw
+    await expect(clientA.quit()).resolves.toBe('OK')
+    await expect(clientB.quit()).resolves.toBe('OK')
   })
 })

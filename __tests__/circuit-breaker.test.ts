@@ -1,3 +1,4 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // Minimal ambient declarations to satisfy TypeScript without relying on external test type packages.

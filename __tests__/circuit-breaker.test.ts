@@ -2,7 +2,8 @@ import { describe, it, expect, jest, afterEach } from '@jest/globals'
 import { CircuitBreaker, CircuitBreakerOpenError } from '@/circuit-breaker'
 
 // Deterministic mock for date-fns used by the implementation
-jest.mock('date-fns', () => {
+jest.mock('date-fns', () => ({
+  ...jest.requireActual('date-fns'),
   const actual = jest.requireActual('date-fns')
   return {
     ...actual,
@@ -17,7 +18,8 @@ jest.mock('date-fns', () => {
 })
 
 // Keep react-use stable in case it's imported indirectly by the source
-jest.mock('react-use', () => {
+jest.mock('react-use', () => ({
+  ...jest.requireActual('react-use'),
   try {
     const actual = jest.requireActual('react-use')
     return {

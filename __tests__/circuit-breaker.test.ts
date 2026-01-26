@@ -1,4 +1,6 @@
-jest.mock('date-fns', () => {
+import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals'
+jest.mock('date-fns', () => ({
+  ...jest.requireActual('date-fns'),
   let actual = {}
   try {
     actual = jest.requireActual('date-fns')
@@ -12,7 +14,8 @@ jest.mock('date-fns', () => {
   }
 })
 
-jest.mock('react-use', () => {
+jest.mock('react-use', () => ({
+  ...jest.requireActual('react-use'),
   let actual = {}
   try {
     actual = jest.requireActual('react-use')
@@ -25,7 +28,8 @@ jest.mock('react-use', () => {
   }
 })
 
-jest.mock('@/config/redis', () => {
+jest.mock('@/config/redis', () => ({
+  ...jest.requireActual('@/config/redis'),
   let actual = {}
   try {
     actual = jest.requireActual('@/config/redis')

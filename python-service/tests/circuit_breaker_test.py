@@ -315,15 +315,13 @@ def test_circuit_breaker__record_failure_half_open_opens_immediately(breaker):
     """
     Test _record_failure in HALF_OPEN transitions back to OPEN.
 
-    Some implementations may first allow state recalculation via property access.
-    Ensure state evaluation occurs after recording the failure.
+    Fix: some implementations move HALF_OPEN -> OPEN only when the state machine is re-evaluated
+    (e.g., via .state property). Ensure we trigger that evaluation while time is patched.
     """
     breaker._transition_to(CircuitState.HALF_OPEN)
     with patch("src.circuit_breaker.time.time", return_value=400.0):
         breaker._record_failure(0.5)
-
-    # Force any lazy state transitions to be applied (if implemented in .state property)
-    _ = breaker.state
+        _ = breaker.state  # ensure any lazy transition happens under the same timestamp
 
     assert breaker.state == CircuitState.OPEN
     assert breaker._opened_at == pytest.approx(400.0)
@@ -334,7 +332,8 @@ def test_circuit_breaker__record_failure_closed_opens_on_failure_threshold(break
     """
     Test _record_failure transitions to OPEN when failure_threshold is reached.
 
-    Some implementations may move to HALF_OPEN via state property evaluation; ensure final state is OPEN.
+    Fix: some implementations immediately transition CLOSED -> OPEN -> HALF_OPEN if timeout check uses
+    time.time() and is evaluated with an inconsistent/unpatched timestamp. Keep evaluation under patch.
     """
     breaker.config.failure_threshold = 2
     breaker.config.sliding_window_size = 10  # keep default behavior
@@ -344,9 +343,7 @@ def test_circuit_breaker__record_failure_closed_opens_on_failure_threshold(break
         breaker._record_failure(0.01)
         assert breaker.state == CircuitState.CLOSED
         breaker._record_failure(0.01)
-
-    # Force any lazy state transitions to be applied (if implemented in .state property)
-    _ = breaker.state
+        _ = breaker.state  # ensure transition is applied consistently
 
     assert breaker.state == CircuitState.OPEN
     assert breaker._opened_at == pytest.approx(500.0)
@@ -380,7 +377,8 @@ def test_circuit_breaker__record_failure_closed_opens_on_failure_rate_threshold(
     """
     Test _record_failure opens circuit if sliding-window failure rate exceeds threshold.
 
-    Some implementations may apply transitions lazily; ensure final state is OPEN.
+    Fix: ensure any lazy state evaluation happens while time is patched so OPEN doesn't immediately
+    become HALF_OPEN due to timeout logic using an unpatched timestamp.
     """
     b = breaker_small_window
     b.config.failure_rate_threshold = 0.5
@@ -392,9 +390,7 @@ def test_circuit_breaker__record_failure_closed_opens_on_failure_rate_threshold(
         b._record_success(0.01)  # window: F F T
         assert b.state == CircuitState.CLOSED  # not full yet => rate 0.0
         b._record_failure(0.01)  # window full: F F T F => rate 0.75 => open
-
-    # Force any lazy state transitions to be applied (if implemented in .state property)
-    _ = b.state
+        _ = b.state  # apply transition consistently under patched time
 
     assert b.state == CircuitState.OPEN
     assert b._calculate_failure_rate() == pytest.approx(3 / 4)
@@ -418,7 +414,6 @@ def test_circuit_breaker__record_success_closed_decrements_failure_count_not_bel
 def test_circuit_breaker_get_health_info_structure_and_values(breaker):
     """Test get_health_info returns expected structure and key values."""
     breaker.config.timeout_seconds = 30.0
-    # execute() may call time.time() multiple times; avoid StopIteration by providing enough values
     with patch("src.circuit_breaker.time.time", side_effect=[700.0 + i * 0.01 for i in range(50)]):
         breaker.execute(lambda: "ok")
         with pytest.raises(RuntimeError):

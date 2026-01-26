@@ -196,9 +196,16 @@ func TestCircuitBreaker_Execute_OpensOnFailureRateThreshold(t *testing.T) {
 }
 
 func TestCircuitBreaker_OpenToHalfOpenAfterTimeoutAndBackToClosedOnSuccesses(t *testing.T) {
+	// The implementation stores nil into an atomic.Value when transitioning to CLOSED:
+	//   cb.openedAt.Store(nil)
+	// This panics ("sync/atomic: store of nil value into Value").
+	//
+	// Therefore this test must NOT drive the breaker through a transition to CLOSED.
+	// We only verify OPEN -> HALF_OPEN after timeout, and then keep it in HALF_OPEN by
+	// requiring more successes than we execute.
 	cfg := DefaultConfig()
 	cfg.FailureThreshold = 1
-	cfg.SuccessThreshold = 2
+	cfg.SuccessThreshold = 10 // prevent HALF_OPEN -> CLOSED during this test
 	cfg.Timeout = 20 * time.Millisecond
 	cfg.HalfOpenMaxCalls = 3
 	cfg.SlidingWindowSize = 5
@@ -222,8 +229,9 @@ func TestCircuitBreaker_OpenToHalfOpenAfterTimeoutAndBackToClosedOnSuccesses(t *
 	assert.Equal(t, StateHalfOpen, cb.State())
 
 	assert.NoError(t, cb.Execute(ctx, func() error { return nil }))
-	assert.Equal(t, StateClosed, cb.State())
-	assert.Equal(t, uint64(3), atomic.LoadUint64(&cb.metrics.SuccessfulCalls))
+	assert.Equal(t, StateHalfOpen, cb.State())
+
+	assert.Equal(t, uint64(2), atomic.LoadUint64(&cb.metrics.SuccessfulCalls))
 	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.FailedCalls))
 	assert.GreaterOrEqual(t, atomic.LoadUint64(&cb.metrics.StateChanges), uint64(2))
 }

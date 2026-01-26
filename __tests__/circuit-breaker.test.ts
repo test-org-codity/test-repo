@@ -9,16 +9,34 @@ const isJestRuntime =
 
 const maybeDescribe = isJestRuntime ? describe : describe.skip
 
-jest.mock('date-fns', () => ({
-  ...jest.requireActual('date-fns'),
-  format: jest.fn((_date, _fmt) => '2024-01-01'),
-  subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
-}))
+jest.mock('date-fns', () => {
+  let actual = {}
+  try {
+    actual = jest.requireActual('date-fns')
+  } catch (_e) {
+    // ignore
+  }
 
-jest.mock('react-use', () => ({
-  ...jest.requireActual('react-use'),
-  useMedia: jest.fn(() => false),
-}))
+  return {
+    ...actual,
+    format: jest.fn((_date, _fmt) => '2024-01-01'),
+    subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
+  }
+})
+
+jest.mock('react-use', () => {
+  let actual = {}
+  try {
+    actual = jest.requireActual('react-use')
+  } catch (_e) {
+    // ignore
+  }
+
+  return {
+    ...actual,
+    useMedia: jest.fn(() => false),
+  }
+})
 
 jest.mock('@/config/redis', () => {
   let actual = {}
@@ -102,13 +120,13 @@ maybeDescribe('redis client behavior (mocked)', () => {
     expect(await client.get('k2')).toBeNull()
 
     expect(client.del).toHaveBeenCalledTimes(2)
+    expect(client.set).toHaveBeenCalledTimes(1)
+    expect(client.get).toHaveBeenCalledTimes(1)
   })
 
-  it('getRedisClient returns a stable mocked client instance', async () => {
-    const c1 = await getRedisClient()
-    const c2 = await getRedisClient()
-
-    expect(c1).toBe(c2)
-    expect(getRedisClient).toHaveBeenCalledTimes(2)
+  it('quit resolves OK', async () => {
+    const client = await getRedisClient()
+    await expect(client.quit()).resolves.toBe('OK')
+    expect(client.quit).toHaveBeenCalledTimes(1)
   })
 })

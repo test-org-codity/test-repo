@@ -7,9 +7,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix"
   },
@@ -34,13 +34,14 @@
     "@types/express": "^4.17.21",
     "@types/cors": "^2.8.17",
     "@types/node": "^20.10.5",
+    "@types/jest": "^29.5.11",
     "@typescript-eslint/eslint-plugin": "^6.15.0",
     "@typescript-eslint/parser": "^6.15.0",
     "eslint": "^8.56.0",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.3.3",
-    "vitest": "^1.0.4",
-    "@vitest/coverage-v8": "^1.0.4"
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.1"
   }
 }
 

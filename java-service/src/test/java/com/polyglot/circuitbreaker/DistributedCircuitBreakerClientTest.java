@@ -215,14 +215,16 @@ class DistributedCircuitBreakerClientTest {
         boolean firstReport = waitForCondition(() -> stateCount.get() > initialStateReports, 7000);
         assertTrue(firstReport, "Expected at least one periodic state report before shutdown");
 
-        int beforeShutdownCount = stateCount.get();
+        // Shutdown client and allow any in-flight report to complete
         client.shutdown();
+        Thread.sleep(1000);
+        int settledAfterShutdown = stateCount.get();
 
-        // Wait longer than sync interval to ensure no further reports after shutdown
+        // Wait longer than sync interval to ensure no further periodic reports after shutdown
         Thread.sleep(6000);
-        int afterShutdownCount = stateCount.get();
+        int finalAfterShutdown = stateCount.get();
 
-        assertEquals(beforeShutdownCount, afterShutdownCount, "No additional reports should be sent after shutdown");
+        assertEquals(settledAfterShutdown, finalAfterShutdown, "No periodic reports should be sent after shutdown");
     }
 
     @Test

@@ -1,400 +1,463 @@
 import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals'
 import { CircuitBreaker, CircuitBreakerOpenError, CircuitState, DistributedCircuitBreakerClient, withCircuitBreaker } from '../src/circuit-breaker'
 
-describe('CircuitBreaker basic behavior', () => {
+describe('CircuitBreakerOpenError', () => {
   afterEach(() => {
-    jest.clearAllMocks()
-    jest.useRealTimers()
     jest.restoreAllMocks()
   })
 
-  it('execute resolves and records success metrics', async () => {
-    const cb = new CircuitBreaker('svc-success', { failureThreshold: 2 })
-    const result = await cb.execute(async () => 'ok')
+  it('sets name, message, and remainingTimeMs correctly', () => {
+    const err = new CircuitBreakerOpenError('svc', 1234.6)
+    expect(err).toBeInstanceOf(Error)
+    expect(err.name).toBe('CircuitBreakerOpenError')
+    expect(err.remainingTimeMs).toBe(1234.6)
+    expect(err.message).toBe("Circuit breaker 'svc' is open. Retry after 1235ms")
+  })
+})
+
+describe('CircuitBreaker basic behavior', () => {
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  it('executes success and updates metrics', async () => {
+    const cb = new CircuitBreaker('svc-basic-1', { timeoutMs: 1000 })
+    const operation = jest.fn().mockResolvedValue('ok')
+
+    const result = await cb.execute(operation)
+
     expect(result).toBe('ok')
     const health = cb.getHealthInfo()
+    expect(health.state).toBe(CircuitState.CLOSED)
     expect(health.metrics.totalCalls).toBe(1)
     expect(health.metrics.successfulCalls).toBe(1)
     expect(health.metrics.failedCalls).toBe(0)
     expect(health.metrics.lastSuccessTime).toBeInstanceOf(Date)
-    expect(health.state).toBe(CircuitState.CLOSED)
   })
 
-  it('execute rejects and records failure metrics; opens when threshold reached', async () => {
-    const cb = new CircuitBreaker('svc-fail', { failureThreshold: 2, failureRateThreshold: 1 })
-    await expect(cb.execute(async () => { throw new Error('boom1') })).rejects.toThrow('boom1')
-    let health = cb.getHealthInfo()
-    expect(health.metrics.failedCalls).toBe(1)
-    expect(health.state).toBe(CircuitState.CLOSED)
+  it('opens after reaching failureThreshold', async () => {
+    const cb = new CircuitBreaker('svc-basic-2', {
+      failureThreshold: 2,
+      failureRateThreshold: 1,
+      timeoutMs: 10000,
+    })
+    const opFail = jest.fn().mockRejectedValue(new Error('fail'))
 
-    await expect(cb.execute(async () => { throw new Error('boom2') })).rejects.toThrow('boom2')
-    health = cb.getHealthInfo()
+    await expect(cb.execute(opFail)).rejects.toThrow('fail')
+    await expect(cb.execute(opFail)).rejects.toThrow('fail')
+
+    expect(cb.getState()).toBe(CircuitState.OPEN)
+    const health = cb.getHealthInfo()
     expect(health.metrics.failedCalls).toBe(2)
-    expect(health.state).toBe(CircuitState.OPEN)
-    expect(health.metrics.stateTransitions).toBeGreaterThanOrEqual(1)
-    expect(health.metrics.lastFailureTime).toBeInstanceOf(Date)
+    expect(health.metrics.stateTransitions).toBe(1)
   })
 
-  it('throws CircuitBreakerOpenError when open and no fallback; increments rejectedCalls', async () => {
-    const cb = new CircuitBreaker('svc-open-no-fallback', { failureThreshold: 1, timeoutMs: 1000 })
-    await expect(cb.execute(async () => { throw new Error('err') })).rejects.toThrow('err')
-    const before = cb.getHealthInfo().metrics.rejectedCalls
-    await expect(cb.execute(async () => 'ok')).rejects.toBeInstanceOf(CircuitBreakerOpenError)
-    const after = cb.getHealthInfo().metrics.rejectedCalls
-    expect(after).toBe(before + 1)
-    try {
-      await cb.execute(async () => 'ok')
-    } catch (e: any) {
-      expect(e).toBeInstanceOf(CircuitBreakerOpenError)
-      expect(e.name).toBe('CircuitBreakerOpenError')
-      expect(typeof e.remainingTimeMs).toBe('number')
-      expect(e.message).toContain("Circuit breaker 'svc-open-no-fallback' is open. Retry after")
-    }
+  it('rejects when open and uses fallback', async () => {
+    const cb = new CircuitBreaker('svc-basic-3', {
+      failureThreshold: 1,
+      failureRateThreshold: 1,
+      timeoutMs: 10000,
+    })
+    const opFail = jest.fn().mockRejectedValue(new Error('fail'))
+    await expect(cb.execute(opFail)).rejects.toThrow('fail')
+    expect(cb.getState()).toBe(CircuitState.OPEN)
+
+    const fallback = jest.fn().mockResolvedValue('fallback')
+    const result = await cb.execute(jest.fn(), fallback)
+
+    expect(result).toBe('fallback')
+    const health = cb.getHealthInfo()
+    expect(health.metrics.rejectedCalls).toBe(1)
+    expect(health.metrics.totalCalls).toBe(1) // totalCalls not incremented for rejected
   })
 
-  it('uses fallback when open and records rejected call', async () => {
-    const cb = new CircuitBreaker('svc-open-fallback', { failureThreshold: 1, timeoutMs: 1000 })
-    await expect(cb.execute(async () => { throw new Error('err') })).rejects.toThrow('err')
-    const res = await cb.execute(async () => 'should-not-run', async () => 'fallback-value')
-    expect(res).toBe('fallback-value')
+  it('rejects when open without fallback and throws CircuitBreakerOpenError with remaining time', async () => {
+    const cb = new CircuitBreaker('svc-basic-4', {
+      failureThreshold: 1,
+      failureRateThreshold: 1,
+      timeoutMs: 10000,
+    })
+
+    // Open the breaker at time t=1000
+    const nowSpy = jest.spyOn(Date, 'now')
+    nowSpy.mockReturnValueOnce(1000) // during execute to measure start time and open
+    const opFail = jest.fn().mockRejectedValue(new Error('fail'))
+    await expect(cb.execute(opFail)).rejects.toThrow('fail')
+    expect(cb.getState()).toBe(CircuitState.OPEN)
+
+    // Now at t=1200, remaining should be 9800
+    nowSpy.mockReturnValue(1200)
+    await expect(cb.execute(jest.fn())).rejects.toBeInstanceOf(CircuitBreakerOpenError)
+    await expect(cb.execute(jest.fn())).rejects.toMatchObject({
+      name: 'CircuitBreakerOpenError',
+      remainingTimeMs: 9800,
+      message: "Circuit breaker 'svc-basic-4' is open. Retry after 9800ms",
+    })
+  })
+
+  it('transitions to HALF_OPEN after timeout and enforces halfOpenMaxCalls', () => {
+    const cb = new CircuitBreaker('svc-basic-5', {
+      failureThreshold: 1,
+      timeoutMs: 1000,
+      halfOpenMaxCalls: 2,
+      successThreshold: 3,
+      failureRateThreshold: 1,
+    })
+
+    const nowSpy = jest.spyOn(Date, 'now')
+    // Open at t=0
+    nowSpy.mockReturnValueOnce(0)
+    expect(() => cb.executeSync(() => { throw new Error('x') })).toThrow('x')
+    expect(cb.getState()).toBe(CircuitState.OPEN)
+
+    // At t=1000, should attempt reset to HALF_OPEN when getState called
+    nowSpy.mockReturnValue(1000)
+    expect(cb.getState()).toBe(CircuitState.HALF_OPEN)
+
+    // Allow 2 calls in HALF_OPEN
+    expect(cb.executeSync(() => 'ok')).toBe('ok')
+    expect(cb.executeSync(() => 'ok')).toBe('ok')
+
+    // Third call should be rejected (no fallback)
+    expect(() => cb.executeSync(() => 'ok')).toThrow(CircuitBreakerOpenError)
+
     const health = cb.getHealthInfo()
     expect(health.metrics.rejectedCalls).toBe(1)
   })
 
-  it('does not call fallback on operation failure (only when breaker is open)', async () => {
-    const cb = new CircuitBreaker('svc-fallback-not-used', { failureThreshold: 10 })
-    const fallback = jest.fn(async () => 'fallback')
-    await expect(cb.execute(async () => { throw new Error('err') }, fallback)).rejects.toThrow('err')
-    expect(fallback).not.toHaveBeenCalled()
-  })
-
-  it('executeSync returns value and records success', () => {
-    const cb = new CircuitBreaker('svc-exec-sync', {})
-    const result = cb.executeSync(() => 42)
-    expect(result).toBe(42)
-    const health = cb.getHealthInfo()
-    expect(health.metrics.totalCalls).toBe(1)
-    expect(health.metrics.successfulCalls).toBe(1)
-    expect(health.metrics.failedCalls).toBe(0)
-  })
-
-  it('executeSync throws and records failure, opens when threshold reached', () => {
-    const cb = new CircuitBreaker('svc-exec-sync-fail', { failureThreshold: 1 })
-    expect(() => cb.executeSync(() => { throw new Error('nope') })).toThrow('nope')
-    const health = cb.getHealthInfo()
-    expect(health.state).toBe(CircuitState.OPEN)
-    expect(health.metrics.failedCalls).toBe(1)
-  })
-})
-
-describe('CircuitBreaker half-open behavior', () => {
-  afterEach(() => {
-    jest.clearAllMocks()
-    jest.useRealTimers()
-    jest.restoreAllMocks()
-  })
-
-  it('transitions to HALF_OPEN after timeout and limits calls with halfOpenMaxCalls', async () => {
-    let now = 1000
-    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now)
-
-    const cb = new CircuitBreaker('svc-half-open-limit', {
+  it('closes after reaching successThreshold in HALF_OPEN', () => {
+    const cb = new CircuitBreaker('svc-basic-6', {
       failureThreshold: 1,
-      timeoutMs: 500,
-      halfOpenMaxCalls: 1,
-      successThreshold: 999
-    })
-
-    await expect(cb.execute(async () => { throw new Error('fail') })).rejects.toThrow()
-    expect(cb.getState()).toBe(CircuitState.OPEN)
-
-    now = 1600 // exceed timeout
-    expect(cb.getState()).toBe(CircuitState.HALF_OPEN)
-
-    // First call allowed
-    const res1 = await cb.execute(async () => 'ok1')
-    expect(res1).toBe('ok1')
-
-    // Second call should be rejected due to halfOpenMaxCalls limit
-    const rejectedBefore = cb.getHealthInfo().metrics.rejectedCalls
-    await expect(cb.execute(async () => 'ok2')).rejects.toBeInstanceOf(CircuitBreakerOpenError)
-    const rejectedAfter = cb.getHealthInfo().metrics.rejectedCalls
-    expect(rejectedAfter).toBe(rejectedBefore + 1)
-
-    nowSpy.mockRestore()
-  })
-
-  it('in HALF_OPEN, consecutive successes >= successThreshold transitions to CLOSED and resets counts', async () => {
-    let now = 1000
-    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now)
-
-    const cb = new CircuitBreaker('svc-half-open-close', {
-      failureThreshold: 1,
-      timeoutMs: 500,
+      timeoutMs: 1000,
       halfOpenMaxCalls: 5,
-      successThreshold: 2
+      successThreshold: 2,
+      failureRateThreshold: 1,
     })
 
-    await expect(cb.execute(async () => { throw new Error('boom') })).rejects.toThrow()
+    const nowSpy = jest.spyOn(Date, 'now')
+    nowSpy.mockReturnValueOnce(0)
+    expect(() => cb.executeSync(() => { throw new Error('x') })).toThrow('x')
     expect(cb.getState()).toBe(CircuitState.OPEN)
 
-    now = 1600
+    nowSpy.mockReturnValue(1000)
     expect(cb.getState()).toBe(CircuitState.HALF_OPEN)
 
-    await cb.execute(async () => 'ok')
+    expect(cb.executeSync(() => 'ok')).toBe('ok')
     expect(cb.getState()).toBe(CircuitState.HALF_OPEN)
-    await cb.execute(async () => 'ok2')
+    expect(cb.executeSync(() => 'ok')).toBe('ok')
     expect(cb.getState()).toBe(CircuitState.CLOSED)
 
     const health = cb.getHealthInfo()
     expect(health.failureCount).toBe(0)
     expect(health.successCount).toBe(0)
-    expect(health.metrics.stateTransitions).toBeGreaterThanOrEqual(2)
-    nowSpy.mockRestore()
   })
 
-  it('in HALF_OPEN, any failure transitions back to OPEN', async () => {
-    let now = 1000
-    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now)
-
-    const cb = new CircuitBreaker('svc-half-open-failure', {
-      failureThreshold: 1,
-      timeoutMs: 500,
+  it('returns to OPEN if a failure occurs in HALF_OPEN', () => {
+    const cb = new CircuitBreaker('svc-basic-7', {
+      failureThreshold: 2,
+      timeoutMs: 1000,
       halfOpenMaxCalls: 5,
-      successThreshold: 3
+      successThreshold: 3,
+      failureRateThreshold: 1,
     })
 
-    await expect(cb.execute(async () => { throw new Error('fail') })).rejects.toThrow()
+    const nowSpy = jest.spyOn(Date, 'now')
+    nowSpy.mockReturnValueOnce(0)
+    expect(() => cb.executeSync(() => { throw new Error('x') })).toThrow('x')
     expect(cb.getState()).toBe(CircuitState.OPEN)
 
-    now = 1600
+    nowSpy.mockReturnValue(1000)
     expect(cb.getState()).toBe(CircuitState.HALF_OPEN)
 
-    await expect(cb.execute(async () => { throw new Error('again') })).rejects.toThrow('again')
+    expect(() => cb.executeSync(() => { throw new Error('boom') })).toThrow('boom')
     expect(cb.getState()).toBe(CircuitState.OPEN)
-    nowSpy.mockRestore()
   })
 
-  it('remains OPEN if timeout not reached', async () => {
-    let now = 1000
-    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now)
-
-    const cb = new CircuitBreaker('svc-still-open', {
-      failureThreshold: 1,
-      timeoutMs: 1000
-    })
-    await expect(cb.execute(async () => { throw new Error('fail') })).rejects.toThrow()
-    expect(cb.getState()).toBe(CircuitState.OPEN)
-
-    now = 1500 // not enough time
-    expect(cb.getState()).toBe(CircuitState.OPEN)
-    nowSpy.mockRestore()
-  })
-})
-
-describe('CircuitBreaker sliding window and metrics', () => {
-  afterEach(() => {
-    jest.clearAllMocks()
-    jest.useRealTimers()
-    jest.restoreAllMocks()
-  })
-
-  it('opens based on failure rate threshold using sliding window', async () => {
-    const cb = new CircuitBreaker('svc-failure-rate', {
-      failureThreshold: 100, // ensure count threshold not reached
-      slidingWindowSize: 4,
-      failureRateThreshold: 0.5
+  it('decreases failureCount on success in CLOSED', () => {
+    const cb = new CircuitBreaker('svc-basic-8', {
+      failureThreshold: 100,
+      failureRateThreshold: 1,
     })
 
-    // First two failures should fill 2/4 = 0.5 and open
-    await expect(cb.execute(async () => { throw new Error('f1') })).rejects.toThrow('f1')
+    // Cause some failures but not enough to open
+    expect(() => cb.executeSync(() => { throw new Error('x') })).toThrow('x')
+    expect(() => cb.executeSync(() => { throw new Error('y') })).toThrow('y')
+    expect(() => cb.executeSync(() => { throw new Error('z') })).toThrow('z')
+
     let health = cb.getHealthInfo()
     expect(health.state).toBe(CircuitState.CLOSED)
+    expect(health.failureCount).toBe(3)
 
-    await expect(cb.execute(async () => { throw new Error('f2') })).rejects.toThrow('f2')
+    cb.executeSync(() => 'ok')
     health = cb.getHealthInfo()
-    expect(health.state).toBe(CircuitState.OPEN)
+    expect(health.failureCount).toBe(2)
   })
 
-  it('averageResponseTimeMs computed and trims to last 100 samples', () => {
-    const cb = new CircuitBreaker('svc-avg-rt')
-
-    const spy = jest.spyOn(Date, 'now')
-    let call = 0
-    spy.mockImplementation(() => {
-      call += 1
-      // odd calls: start=0, even calls: duration increases by 1 each time
-      return call % 2 === 1 ? 0 : call / 2
+  it('opens based on sliding window failure rate threshold', () => {
+    const cb = new CircuitBreaker('svc-basic-9', {
+      slidingWindowSize: 4,
+      failureRateThreshold: 0.5,
+      failureThreshold: 99,
     })
 
-    for (let i = 0; i < 101; i++) {
-      cb.executeSync(() => true)
-    }
+    expect(() => cb.executeSync(() => { throw new Error('a') })).toThrow('a')
+    expect(cb.getHealthInfo().failureRate).toBeCloseTo(0.25, 5)
+    expect(() => cb.executeSync(() => { throw new Error('b') })).toThrow('b')
+
+    expect(cb.getState()).toBe(CircuitState.OPEN)
+    const health = cb.getHealthInfo()
+    expect(health.failureRate).toBeCloseTo(0.5, 5)
+  })
+
+  it('computes averageResponseTimeMs over calls', () => {
+    const cb = new CircuitBreaker('svc-basic-10')
+
+    const nowSpy = jest.spyOn(Date, 'now')
+    // First call duration 100ms
+    nowSpy.mockReturnValueOnce(1000) // start
+    nowSpy.mockReturnValueOnce(1100) // end
+    cb.executeSync(() => 'ok1')
+
+    // Second call duration 200ms
+    nowSpy.mockReturnValueOnce(2000) // start
+    nowSpy.mockReturnValueOnce(2200) // end
+    cb.executeSync(() => 'ok2')
+
     const avg = cb.getHealthInfo().metrics.averageResponseTimeMs
-    expect(avg).toBeCloseTo(51.5, 5) // average of 2..101
-    spy.mockRestore()
+    expect(avg).toBe(150)
+  })
+
+  it('does not use fallback when operation fails while allowed', async () => {
+    const cb = new CircuitBreaker('svc-basic-11', {
+      failureThreshold: 2,
+      failureRateThreshold: 1,
+    })
+    const fallback = jest.fn().mockResolvedValue('fb')
+    const opFail = jest.fn().mockRejectedValue(new Error('boom'))
+    await expect(cb.execute(opFail, fallback)).rejects.toThrow('boom')
+    expect(fallback).not.toHaveBeenCalled()
+  })
+
+  it('executeSync increments rejectedCalls but not totalCalls when not allowed', () => {
+    const cb = new CircuitBreaker('svc-basic-12', { failureThreshold: 1, failureRateThreshold: 1, timeoutMs: 10000 })
+    expect(() => cb.executeSync(() => { throw new Error('x') })).toThrow('x')
+    expect(cb.getState()).toBe(CircuitState.OPEN)
+
+    const before = cb.getHealthInfo().metrics
+    expect(() => cb.executeSync(() => 'ok')).toThrow(CircuitBreakerOpenError)
+    const after = cb.getHealthInfo().metrics
+    expect(after.rejectedCalls).toBe(before.rejectedCalls + 1)
+    expect(after.totalCalls).toBe(before.totalCalls) // unchanged
   })
 })
 
 describe('CircuitBreaker registry', () => {
+  it('getOrCreate returns same instance for same name', () => {
+    const a = CircuitBreaker.getOrCreate('svc-reg-1', { failureThreshold: 3 })
+    const b = CircuitBreaker.getOrCreate('svc-reg-1', { failureThreshold: 5 })
+    expect(a).toBe(b)
+    expect(a.getHealthInfo().config.failureThreshold).toBe(3)
+  })
+
+  it('getRegistry returns a copy (mutations do not affect internal registry)', () => {
+    const before = CircuitBreaker.getRegistry()
+    const copy = CircuitBreaker.getRegistry()
+    copy.set('mutated', new CircuitBreaker('mutated'))
+    const after = CircuitBreaker.getRegistry()
+    expect(after.size).toBe(before.size)
+    expect(after.has('mutated')).toBe(false)
+  })
+})
+
+describe('DistributedCircuitBreakerClient', () => {
+  const originalFetch = global.fetch as any
+  const originalNodeId = process.env.NODE_ID
+
+  beforeEach(() => {
+    process.env.NODE_ID = 'node-123'
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: jest.fn().mockResolvedValue({}) })
+  })
+
   afterEach(() => {
     jest.clearAllMocks()
+    global.fetch = originalFetch
+    process.env.NODE_ID = originalNodeId
+    jest.useRealTimers()
   })
 
-  it('getOrCreate returns same instance for same name', () => {
-    const a = CircuitBreaker.getOrCreate('shared', { failureThreshold: 3 })
-    const b = CircuitBreaker.getOrCreate('shared', { failureThreshold: 10 })
-    expect(a).toBe(b)
+  it('register sends registration to coordinator', async () => {
+    const client = new DistributedCircuitBreakerClient('http://coordinator')
+    const breaker = new CircuitBreaker('svc-dist-1', { failureThreshold: 7, successThreshold: 2 })
+    client.register(breaker)
+
+    // registration is sent asynchronously; allow microtask
+    await Promise.resolve()
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://coordinator/circuit-breakers/register',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: expect.any(String),
+      })
+    )
+    const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body)
+    expect(body).toMatchObject({
+      service: 'svc-dist-1',
+      node_id: 'node-123',
+      failure_threshold: 7,
+      success_threshold: 2,
+    })
   })
 
-  it('getRegistry returns a copy of registry map', () => {
-    const name1 = 'reg-1'
-    const name2 = 'reg-2'
-    CircuitBreaker.getOrCreate(name1)
-    CircuitBreaker.getOrCreate(name2)
-    const regCopy = CircuitBreaker.getRegistry()
-    expect(regCopy).toBeInstanceOf(Map)
-    expect(regCopy.size).toBeGreaterThanOrEqual(2)
-    // Mutating the copy should not change the original registry
-    regCopy.set('new', new CircuitBreaker('new'))
-    const regCopy2 = CircuitBreaker.getRegistry()
-    expect(regCopy2.has('new')).toBe(false)
+  it('getAggregatedState returns data from coordinator', async () => {
+    const payload = {
+      service: 'svc-dist-agg',
+      consensusState: CircuitState.HALF_OPEN,
+      totalNodes: 3,
+      healthScore: 87,
+      nodeStates: { 'n1': CircuitState.OPEN },
+    }
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      json: jest.fn().mockResolvedValue(payload),
+    })
+    const client = new DistributedCircuitBreakerClient('http://coordinator')
+    const resp = await client.getAggregatedState('svc-dist-agg')
+    expect(resp).toEqual(payload)
+    expect(global.fetch).toHaveBeenCalledWith('http://coordinator/circuit-breakers/svc-dist-agg/aggregate')
+  })
+
+  it('getAggregatedState returns default on failure', async () => {
+    ;(global.fetch as jest.Mock).mockRejectedValueOnce(new Error('network'))
+    const client = new DistributedCircuitBreakerClient('http://coordinator')
+    const resp = await client.getAggregatedState('svc-dist-agg-fail')
+    expect(resp).toEqual({
+      service: 'svc-dist-agg-fail',
+      consensusState: CircuitState.CLOSED,
+      totalNodes: 0,
+      healthScore: 0,
+      nodeStates: {},
+    })
+  })
+
+  it('startSync periodically reports state for registered breakers', async () => {
+    jest.useFakeTimers()
+    const client = new DistributedCircuitBreakerClient('http://coordinator', 1000)
+    const breakerA = new CircuitBreaker('svc-dist-2A')
+    const breakerB = new CircuitBreaker('svc-dist-2B')
+
+    client.register(breakerA)
+    client.register(breakerB)
+
+    // ignore registration calls
+    await Promise.resolve()
+    ;(global.fetch as jest.Mock).mockClear()
+
+    client.startSync()
+
+    jest.advanceTimersByTime(1000)
+    await Promise.resolve()
+
+    // Two POSTs to state endpoint (one per breaker)
+    const calls = (global.fetch as jest.Mock).mock.calls
+    expect(calls.length).toBe(2)
+    expect(calls[0][0]).toBe('http://coordinator/circuit-breakers/state')
+    expect(calls[1][0]).toBe('http://coordinator/circuit-breakers/state')
+
+    // Verify payload contains health_info and node_id
+    const bodies = calls.map((c: any[]) => JSON.parse(c[1].body))
+    bodies.forEach((body: any) => {
+      expect(body).toHaveProperty('service')
+      expect(body).toHaveProperty('node_id', 'node-123')
+      expect(body).toHaveProperty('state')
+      expect(body).toHaveProperty('timestamp')
+      expect(body).toHaveProperty('health_info')
+    })
+
+    client.stopSync()
+  })
+
+  it('stopSync cancels further synchronization', async () => {
+    jest.useFakeTimers()
+    const client = new DistributedCircuitBreakerClient('http://coordinator', 500)
+    const breaker = new CircuitBreaker('svc-dist-3')
+    client.register(breaker)
+    await Promise.resolve()
+    ;(global.fetch as jest.Mock).mockClear()
+
+    client.startSync()
+    jest.advanceTimersByTime(500)
+    await Promise.resolve()
+    const callsAfterStart = (global.fetch as jest.Mock).mock.calls.length
+
+    client.stopSync()
+    jest.advanceTimersByTime(2000)
+    await Promise.resolve()
+    const callsAfterStop = (global.fetch as jest.Mock).mock.calls.length
+
+    expect(callsAfterStart).toBeGreaterThan(0)
+    expect(callsAfterStop).toBe(callsAfterStart)
   })
 })
 
 describe('withCircuitBreaker decorator', () => {
   afterEach(() => {
-    jest.clearAllMocks()
     jest.restoreAllMocks()
   })
 
-  it('wraps method and uses CircuitBreaker.execute', async () => {
-    const executeMock = jest.fn().mockResolvedValue('wrapped-result')
-    const getOrCreateSpy = jest.spyOn(CircuitBreaker, 'getOrCreate').mockReturnValue({
-      name: 'decorated',
-      execute: executeMock,
-    } as unknown as CircuitBreaker)
-
-    class Svc {
-      async originalMethod(a: number, b: number) {
-        return a + b
+  it('wraps method execution with circuit breaker and opens on failure', async () => {
+    const name = 'svc-deco-1'
+    class Service {
+      async run(mode: string) {
+        if (mode === 'fail') throw new Error('boom')
+        return 'ok'
       }
     }
 
-    const decorator = withCircuitBreaker('decorated')
-    const proto = Svc.prototype as any
-    const desc = Object.getOwnPropertyDescriptor(proto, 'originalMethod')!
-    const newDesc = decorator(proto, 'originalMethod', desc)
-    if (newDesc) {
-      Object.defineProperty(proto, 'originalMethod', newDesc)
+    const decorator = withCircuitBreaker(name, { failureThreshold: 1, failureRateThreshold: 1, timeoutMs: 10000 })
+    const desc = Object.getOwnPropertyDescriptor(Service.prototype, 'run')!
+    const newDesc = decorator(Service.prototype, 'run', desc)!
+    Object.defineProperty(Service.prototype, 'run', newDesc)
+
+    const s = new Service()
+    await expect(s.run('ok')).resolves.toBe('ok')
+
+    await expect(s.run('fail')).rejects.toThrow('boom')
+    const breaker = CircuitBreaker.getOrCreate(name)
+    expect(breaker.getState()).toBe(CircuitState.OPEN)
+
+    await expect(s.run('ok')).rejects.toBeInstanceOf(CircuitBreakerOpenError)
+  })
+
+  it('uses existing named breaker from registry across multiple instances', async () => {
+    const name = 'svc-deco-2'
+    class A {
+      async doIt(flag: boolean) {
+        if (!flag) throw new Error('nope')
+        return 'A'
+      }
     }
-    const instance = new Svc()
-    const res = await (instance as any).originalMethod(1, 2)
-    expect(res).toBe('wrapped-result')
-    expect(getOrCreateSpy).toHaveBeenCalledWith('decorated', undefined)
-    expect(executeMock).toHaveBeenCalled()
-  })
-})
-
-describe('DistributedCircuitBreakerClient', () => {
-  let originalFetch: any
-  let originalNodeId: string | undefined
-
-  beforeEach(() => {
-    originalFetch = (global as any).fetch
-    ;(global as any).fetch = jest.fn()
-    originalNodeId = process.env.NODE_ID
-    process.env.NODE_ID = 'node-1'
-    jest.useFakeTimers()
-  })
-
-  afterEach(() => {
-    jest.clearAllMocks()
-    jest.useRealTimers()
-    ;(global as any).fetch = originalFetch
-    process.env.NODE_ID = originalNodeId
-  })
-
-  it('register sends registration to coordinator with node ID', async () => {
-    const fetchMock = (global as any).fetch as jest.Mock
-    fetchMock.mockResolvedValue({ ok: true })
-    const client = new DistributedCircuitBreakerClient('http://coordinator', 1000)
-    const breaker = new CircuitBreaker('svc-register', { failureThreshold: 7, successThreshold: 2 })
-    client.register(breaker)
-
-    // allow async sendRegistration to run
-    await Promise.resolve()
-    expect(fetchMock).toHaveBeenCalled()
-    const [url, options] = fetchMock.mock.calls[0]
-    expect(url).toBe('http://coordinator/circuit-breakers/register')
-    expect(options.method).toBe('POST')
-    const body = JSON.parse(options.body)
-    expect(body).toMatchObject({
-      service: 'svc-register',
-      node_id: 'node-1',
-      failure_threshold: 7,
-      success_threshold: 2
-    })
-  })
-
-  it('startSync periodically reports state and stopSync stops it', async () => {
-    const fetchMock = (global as any).fetch as jest.Mock
-    fetchMock.mockResolvedValue({ ok: true })
-    const client = new DistributedCircuitBreakerClient('http://coordinator', 200)
-    const breaker = new CircuitBreaker('svc-sync', {})
-    client.register(breaker)
-
-    client.startSync()
-    // tick once
-    jest.advanceTimersByTime(210)
-    await Promise.resolve()
-    // One call for registration + one for reporting state
-    expect(fetchMock).toHaveBeenCalled()
-    const stateCall = fetchMock.mock.calls.find((c: any) => (c[0] as string).endsWith('/circuit-breakers/state'))
-    expect(stateCall).toBeTruthy()
-    const [, stateOptions] = stateCall!
-    const payload = JSON.parse(stateOptions.body)
-    expect(payload).toMatchObject({
-      service: 'svc-sync',
-      node_id: 'node-1',
-      state: breaker.getState()
-    })
-    expect(typeof payload.timestamp).toBe('number')
-    expect(payload.health_info.name).toBe('svc-sync')
-
-    const callsBeforeStop = fetchMock.mock.calls.length
-    client.stopSync()
-    jest.advanceTimersByTime(500)
-    await Promise.resolve()
-    expect(fetchMock.mock.calls.length).toBe(callsBeforeStop)
-  })
-
-  it('getAggregatedState returns parsed data on success', async () => {
-    const fetchMock = (global as any).fetch as jest.Mock
-    const data = {
-      service: 'svc-agg',
-      consensusState: CircuitState.CLOSED,
-      totalNodes: 3,
-      healthScore: 0.9,
-      nodeStates: { a: CircuitState.CLOSED, b: CircuitState.OPEN, c: CircuitState.CLOSED }
+    class B {
+      async doIt(flag: boolean) {
+        if (!flag) throw new Error('nope')
+        return 'B'
+      }
     }
-    fetchMock.mockResolvedValue({ json: async () => data })
-    const client = new DistributedCircuitBreakerClient('http://coordinator')
-    const res = await client.getAggregatedState('svc-agg')
-    expect(res).toEqual(data)
-  })
 
-  it('getAggregatedState returns default on error', async () => {
-    const fetchMock = (global as any).fetch as jest.Mock
-    fetchMock.mockRejectedValue(new Error('network'))
-    const client = new DistributedCircuitBreakerClient('http://coordinator')
-    const res = await client.getAggregatedState('svc-default')
-    expect(res).toEqual({
-      service: 'svc-default',
-      consensusState: CircuitState.CLOSED,
-      totalNodes: 0,
-      healthScore: 0,
-      nodeStates: {}
-    })
+    const dec = withCircuitBreaker(name, { failureThreshold: 1, failureRateThreshold: 1, timeoutMs: 10000 })
+    const da = dec(A.prototype, 'doIt', Object.getOwnPropertyDescriptor(A.prototype, 'doIt')!)
+    const db = dec(B.prototype, 'doIt', Object.getOwnPropertyDescriptor(B.prototype, 'doIt')!)
+    Object.defineProperty(A.prototype, 'doIt', da!)
+    Object.defineProperty(B.prototype, 'doIt', db!)
+
+    const a = new A()
+    const b = new B()
+
+    await expect(a.doIt(false)).rejects.toThrow('nope')
+    const breaker = CircuitBreaker.getOrCreate(name)
+    expect(breaker.getState()).toBe(CircuitState.OPEN)
+
+    await expect(b.doIt(true)).rejects.toBeInstanceOf(CircuitBreakerOpenError)
   })
 })

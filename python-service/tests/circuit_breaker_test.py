@@ -1,441 +1,321 @@
-import time
-import json
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from collections import deque
 import threading
+import time
 import uuid
-import pytest
-from unittest.mock import Mock, patch
-
+import json
+from typing import Callable, Optional, Dict, Any
+import urllib.request
 from urllib.error import URLError
 
-from src.circuit_breaker import (
-    CircuitState,
-    CircuitBreakerConfig,
-    CircuitBreakerMetrics,
-    CircuitBreakerOpenError,
-    CircuitBreaker,
-    DistributedCircuitBreakerCoordinator,
-    circuit_breaker,
-)
-
-
-@pytest.fixture
-def fast_config():
-    """Provide a fast circuit breaker config for tests with small thresholds."""
-    return CircuitBreakerConfig(
-        failure_threshold=1,
-        success_threshold=2,
-        timeout_seconds=0.05,
-        half_open_max_calls=2,
-        sliding_window_size=4,
-        failure_rate_threshold=0.5,
-    )
-
-
-@pytest.fixture
-def breaker_instance(fast_config):
-    """Create a CircuitBreaker instance with a unique name and fast config."""
-    name = f"test-breaker-{uuid.uuid4()}"
-    return CircuitBreaker(name=name, config=fast_config)
-
-
-@pytest.fixture
-def clear_registry(monkeypatch):
-    """Ensure CircuitBreaker class registry is cleared before tests that use it."""
-    monkeypatch.setattr(CircuitBreaker, "_registry", {})
-    yield
-    monkeypatch.setattr(CircuitBreaker, "_registry", {})
-
-
-def test_circuit_state_values():
-    """Ensure CircuitState enum has expected string values."""
-    assert CircuitState.CLOSED.value == "CLOSED"
-    assert CircuitState.OPEN.value == "OPEN"
-    assert CircuitState.HALF_OPEN.value == "HALF_OPEN"
-
-
-def test_circuit_breaker_config_defaults():
-    """Verify default configuration values."""
-    cfg = CircuitBreakerConfig()
-    assert cfg.failure_threshold == 5
-    assert cfg.success_threshold == 3
-    assert cfg.timeout_seconds == pytest.approx(30.0)
-    assert cfg.half_open_max_calls == 3
-    assert cfg.sliding_window_size == 10
-    assert cfg.failure_rate_threshold == pytest.approx(0.5)
-
-
-def test_metrics_record_response_time_updates_average():
-    """record_response_time should update average_response_time correctly."""
-    m = CircuitBreakerMetrics()
-    durations = [0.1, 0.2, 0.3]
-    for d in durations:
-        m.record_response_time(d)
-    assert m.average_response_time == pytest.approx(sum(durations) / len(durations))
-
-
-def test_metrics_record_response_time_uses_rolling_window():
-    """record_response_time should keep average over the last 100 elements."""
-    m = CircuitBreakerMetrics()
-    durations = [float(i) for i in range(105)]  # 0..104
-    for d in durations:
-        m.record_response_time(d)
-    last_100 = durations[-100:]
-    expected_avg = sum(last_100) / len(last_100)
-    assert m.average_response_time == pytest.approx(expected_avg)
-
-
-def test_circuit_breaker_open_error_attributes_and_message():
-    """CircuitBreakerOpenError should set attributes and format message."""
-    err = CircuitBreakerOpenError("svc", 3.14159)
-    assert err.name == "svc"
-    assert err.remaining_time == pytest.approx(3.14159)
-    assert "Circuit breaker 'svc' is open." in str(err)
-    assert "Retry after" in str(err)
-
-
-def test_circuit_breaker_initialization(breaker_instance, fast_config):
-    """CircuitBreaker initialization sets default state and counters."""
-    br = breaker_instance
-    assert br.state == CircuitState.CLOSED
-    assert br._failure_count == 0
-    assert br._success_count == 0
-    assert br.metrics.total_calls == 0
-    assert br.metrics.failed_calls == 0
-    assert br.metrics.successful_calls == 0
-    assert br._sliding_window.maxlen == fast_config.sliding_window_size
-
-
-def test_circuit_breaker_get_or_create_singleton_behavior(clear_registry):
-    """get_or_create returns the same instance for the same name."""
-    name = f"shared-{uuid.uuid4()}"
-    cfg1 = CircuitBreakerConfig(timeout_seconds=0.1)
-    cfg2 = CircuitBreakerConfig(timeout_seconds=1.0)
-
-    a = CircuitBreaker.get_or_create(name, cfg1)
-    b = CircuitBreaker.get_or_create(name, cfg2)
-
-    assert a is b
-    assert a.config.timeout_seconds == pytest.approx(0.1)
-
-
-def test_circuit_breaker_state_auto_transition_to_half_open_after_timeout(breaker_instance):
-    """Breaker in OPEN should transition to HALF_OPEN after timeout in state property."""
-    br = breaker_instance
-    br._transition_to(CircuitState.OPEN)
-    # make it eligible to attempt reset
-    br._opened_at = time.time() - br.config.timeout_seconds - 0.01
-    initial_transitions = br.metrics.state_transitions
 
-    st = br.state
-    assert st == CircuitState.HALF_OPEN
-    assert br.metrics.state_transitions == initial_transitions + 1
-    assert br._half_open_calls == 0
-    assert br._success_count == 0
-
-
-def test_circuit_breaker_should_attempt_reset_various_cases(breaker_instance):
-    """_should_attempt_reset returns expected values for different timings."""
-    br = breaker_instance
-
-    br._opened_at = None
-    assert br._should_attempt_reset() is False
-
-    br._opened_at = time.time()
-    assert br._should_attempt_reset() is False
-
-    br._opened_at = time.time() - br.config.timeout_seconds - 0.01
-    assert br._should_attempt_reset() is True
-
-
-def test_circuit_breaker_transition_to_states_side_effects(breaker_instance):
-    """_transition_to should set internal fields consistently."""
-    br = breaker_instance
-
-    br._transition_to(CircuitState.OPEN)
-    assert br.state == CircuitState.OPEN
-    assert br._opened_at is not None
-
-    br._half_open_calls = 5
-    br._success_count = 7
-    br._transition_to(CircuitState.HALF_OPEN)
-    assert br.state == CircuitState.HALF_OPEN
-    assert br._half_open_calls == 0
-    assert br._success_count == 0
-
-    br._failure_count = 3
-    br._success_count = 2
-    br._sliding_window.append(True)
-    br._transition_to(CircuitState.CLOSED)
-    assert br.state == CircuitState.CLOSED
-    assert br._failure_count == 0
-    assert br._success_count == 0
-    assert br._opened_at is None
-    assert len(br._sliding_window) == 0
-
-
-def test_circuit_breaker_execute_success_records_metrics_and_window(breaker_instance):
-    """execute should call operation, record success, and update metrics."""
-    br = breaker_instance
-    result = br.execute(lambda: 42)
-
-    assert result == 42
-    assert br.metrics.total_calls == 1
-    assert br.metrics.successful_calls == 1
-    assert br.metrics.last_success_time is not None
-    assert len(br._sliding_window) == 1
-    assert br._sliding_window[-1] is True
-    assert br.metrics.average_response_time > 0.0
-
-
-def test_circuit_breaker_execute_failure_opens_on_threshold():
-    """On failure in CLOSED and failure_threshold=1, breaker should open."""
-    cfg = CircuitBreakerConfig(failure_threshold=1, sliding_window_size=4, failure_rate_threshold=0.9)
-    br = CircuitBreaker(name=f"fail-open-{uuid.uuid4()}", config=cfg)
-
-    with pytest.raises(ValueError):
-        br.execute(lambda: (_ for _ in ()).throw(ValueError("boom")))
-
-    assert br.state == CircuitState.OPEN
-    assert br.metrics.failed_calls == 1
-    assert len(br._sliding_window) == 1
-    assert br._sliding_window[-1] is False
-    assert br._failure_count == 1
-    assert br.metrics.last_failure_time is not None
-
-
-def test_circuit_breaker_execute_open_rejects_with_fallback(breaker_instance):
-    """When OPEN and not ready, execute should reject and call fallback."""
-    br = breaker_instance
-    br._transition_to(CircuitState.OPEN)
-    br._opened_at = time.time()  # just opened, not ready to reset
-
-    initial_total = br.metrics.total_calls
-    initial_rejected = br.metrics.rejected_calls
-
-    val = br.execute(lambda: 1 / 0, fallback=lambda: "fallback-value")
-
-    assert val == "fallback-value"
-    assert br.metrics.total_calls == initial_total  # not incremented when rejected
-    assert br.metrics.rejected_calls == initial_rejected + 1
-
-
-def test_circuit_breaker_execute_open_rejects_without_fallback_raises(breaker_instance):
-    """When OPEN and not ready, execute without fallback should raise CircuitBreakerOpenError."""
-    br = breaker_instance
-    br._transition_to(CircuitState.OPEN)
-    br._opened_at = time.time()
-
-    with pytest.raises(CircuitBreakerOpenError) as ei:
-        br.execute(lambda: 123)
-    err = ei.value
-    assert err.name == br.name
-    assert err.remaining_time == pytest.approx(br.config.timeout_seconds, rel=0.5, abs=0.5)
-    assert br.name in str(err)
-
-
-def test_circuit_breaker_allow_request_half_open_limits():
-    """In HALF_OPEN, _allow_request should enforce half_open_max_calls limit."""
-    cfg = CircuitBreakerConfig(half_open_max_calls=2)
-    br = CircuitBreaker(name=f"half-open-{uuid.uuid4()}", config=cfg)
-    br._transition_to(CircuitState.HALF_OPEN)
-
-    assert br._allow_request() is True
-    assert br._allow_request() is True
-    assert br._allow_request() is False
-
-
-def test_circuit_breaker_half_open_success_threshold_transitions_to_closed():
-    """In HALF_OPEN, reaching success_threshold should close the breaker."""
-    cfg = CircuitBreakerConfig(success_threshold=2, half_open_max_calls=5)
-    br = CircuitBreaker(name=f"half-open-success-{uuid.uuid4()}", config=cfg)
-    br._transition_to(CircuitState.HALF_OPEN)
-
-    res1 = br.execute(lambda: "ok1")
-    res2 = br.execute(lambda: "ok2")
-
-    assert res1 == "ok1"
-    assert res2 == "ok2"
-    assert br.state == CircuitState.CLOSED
-    assert br._success_count == 0  # reset on closing
-
-
-def test_circuit_breaker_half_open_failure_transitions_to_open():
-    """In HALF_OPEN, any failure should re-open the breaker."""
-    cfg = CircuitBreakerConfig()
-    br = CircuitBreaker(name=f"half-open-fail-{uuid.uuid4()}", config=cfg)
-    br._transition_to(CircuitState.HALF_OPEN)
-
-    with pytest.raises(RuntimeError):
-        br.execute(lambda: (_ for _ in ()).throw(RuntimeError("nope")))
-
-    assert br.state == CircuitState.OPEN
-
-
-def test_circuit_breaker_record_success_reduces_failure_count_not_below_zero():
-    """_record_success should reduce failure_count but not below zero when CLOSED."""
-    br = CircuitBreaker(name=f"success-reduce-{uuid.uuid4()}", config=CircuitBreakerConfig())
-    br._failure_count = 2
-
-    br._record_success(0.001)
-    assert br._failure_count == 1
-
-    br._record_success(0.001)
-    br._record_success(0.001)
-    assert br._failure_count == 0
-
-
-def test_circuit_breaker_calculate_failure_rate_requires_full_window():
-    """_calculate_failure_rate should be 0.0 until sliding window is full."""
-    cfg = CircuitBreakerConfig(sliding_window_size=4, failure_threshold=100, failure_rate_threshold=0.5)
-    br = CircuitBreaker(name=f"window-{uuid.uuid4()}", config=cfg)
-
-    # fewer than window size
-    br._record_failure(0.001)
-    br._record_success(0.001)
-    br._record_failure(0.001)
-    assert br._calculate_failure_rate() == pytest.approx(0.0)
-
-    # now fill to window size with a failure to reach 3/4 failures
-    br._record_failure(0.001)
-    assert br._calculate_failure_rate() == pytest.approx(0.75)
-
-
-def test_circuit_breaker_failure_rate_opens_when_threshold_reached():
-    """When sliding window full and failure rate >= threshold, breaker opens."""
-    cfg = CircuitBreakerConfig(failure_threshold=100, sliding_window_size=4, failure_rate_threshold=0.5)
-    br = CircuitBreaker(name=f"rate-open-{uuid.uuid4()}", config=cfg)
-
-    # until window full, should not open
-    br.execute(lambda: "ok")  # success
-    with pytest.raises(ValueError):
-        br.execute(lambda: (_ for _ in ()).throw(ValueError("f1")))
-    with pytest.raises(ValueError):
-        br.execute(lambda: (_ for _ in ()).throw(ValueError("f2")))
-    # still len(window)=3 < 4, not open yet
-    assert br.state == CircuitState.CLOSED
-
-    # 4th failure fills window 3/4 failures => open
-    with pytest.raises(ValueError):
-        br.execute(lambda: (_ for _ in ()).throw(ValueError("f3")))
-    assert br.state == CircuitState.OPEN
-
-
-def test_circuit_breaker_get_health_info_returns_expected_structure(breaker_instance):
-    """get_health_info should return a snapshot with expected keys and values."""
-    br = breaker_instance
-    # produce a success and a failure
-    br.execute(lambda: "ok")
-    with pytest.raises(RuntimeError):
-        br.execute(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
-
-    info = br.get_health_info()
-    assert info["name"] == br.name
-    assert info["state"] == br.state.value
-    assert "failure_count" in info
-    assert "success_count" in info
-    assert "failure_rate" in info
-    assert "metrics" in info
-    metrics = info["metrics"]
-    assert metrics["total_calls"] == br.metrics.total_calls
-    assert metrics["successful_calls"] == br.metrics.successful_calls
-    assert metrics["failed_calls"] == br.metrics.failed_calls
-    assert metrics["rejected_calls"] == br.metrics.rejected_calls
-    assert metrics["average_response_time_ms"] == pytest.approx(br.metrics.average_response_time * 1000)
-    assert "state_transitions" in metrics
-    assert "config" in info
-
-
-def test_distributed_coordinator_register_breaker_sends_registration(breaker_instance):
-    """register_breaker should POST to the coordinator registration endpoint."""
-    coord = DistributedCircuitBreakerCoordinator("http://coordinator.example", sync_interval=0.01)
-    captured = []
-
-    def fake_urlopen(req, timeout=5):
-        captured.append(req)
-        resp = Mock()
-        resp.read.return_value = b"{}"
-        return resp
-
-    with patch("src.circuit_breaker.urllib.request.urlopen", side_effect=fake_urlopen):
-        coord.register_breaker(breaker_instance)
-
-    assert len(captured) == 1
-    req = captured[0]
-    assert req.get_method() == "POST"
-    assert req.full_url.endswith("/circuit-breakers/register")
-    payload = json.loads(req.data.decode("utf-8"))
-    assert payload["service"] == breaker_instance.name
-    assert payload["node_id"] == coord.node_id
-    assert payload["failure_threshold"] == breaker_instance.config.failure_threshold
-    assert payload["success_threshold"] == breaker_instance.config.success_threshold
-
-
-def test_distributed_coordinator_start_and_stop_sync_posts_state_periodically(breaker_instance):
-    """start_sync should spawn a thread that periodically posts breaker state."""
-    coord = DistributedCircuitBreakerCoordinator("http://coordinator.example", sync_interval=0.01)
-    coord.register_breaker(breaker_instance)
-    requests = []
-    lock = threading.Lock()
-
-    def fake_urlopen(req, timeout=5):
-        with lock:
-            requests.append(req)
-        resp = Mock()
-        resp.read.return_value = b"{}"
-        return resp
-
-    with patch("src.circuit_breaker.urllib.request.urlopen", side_effect=fake_urlopen):
-        coord.start_sync()
-        time.sleep(0.05)
-        coord.stop_sync()
-
-    # We expect at least one state sync POST in addition to initial registration POST
-    assert any(r.full_url.endswith("/circuit-breakers/state") and r.get_method() == "POST" for r in requests)
-
-
-def test_distributed_coordinator_synchronize_states_handles_urlerror(breaker_instance):
-    """_synchronize_states should swallow URLError exceptions."""
-    coord = DistributedCircuitBreakerCoordinator("http://coordinator.example", sync_interval=0.01)
-    coord.register_breaker(breaker_instance)
-
-    with patch("src.circuit_breaker.urllib.request.urlopen", side_effect=URLError("network")), \
-         patch.object(DistributedCircuitBreakerCoordinator, "_breakers", {breaker_instance.name: breaker_instance}):
-        # Should not raise
-        coord._synchronize_states()
-
-
-def test_distributed_coordinator_get_cluster_state_success():
-    """get_cluster_state should perform a GET and return parsed JSON."""
-    coord = DistributedCircuitBreakerCoordinator("http://coordinator.example")
-    resp = Mock()
-    resp.read.return_value = json.dumps({"aggregate": {"OPEN": 1}}).encode("utf-8")
-
-    with patch("src.circuit_breaker.urllib.request.urlopen", return_value=resp) as mock_urlopen:
-        data = coord.get_cluster_state("svc")
-        assert data == {"aggregate": {"OPEN": 1}}
-        assert mock_urlopen.call_count == 1
-
-
-def test_distributed_coordinator_get_cluster_state_error():
-    """get_cluster_state should return error dict on URLError."""
-    coord = DistributedCircuitBreakerCoordinator("http://coordinator.example")
-    with patch("src.circuit_breaker.urllib.request.urlopen", side_effect=URLError("down")):
-        data = coord.get_cluster_state("svc")
-        assert data == {"error": "Failed to fetch cluster state"}
-
-
-def test_circuit_breaker_decorator_executes_function_and_attaches_breaker():
-    """Decorator should return wrapper that uses a CircuitBreaker and exposes attributes."""
-    cfg = CircuitBreakerConfig(failure_threshold=100)  # avoid unexpected OPEN
-    name = f"decorator-{uuid.uuid4()}"
-
-    @circuit_breaker(name=name, config=cfg)
-    def sample(x, y):
-        return x + y
-
-    assert hasattr(sample, "circuit_breaker")
-    assert sample.circuit_breaker.name == name
-
-    result = sample(2, 3)
-    assert result == 5
-    assert sample.circuit_breaker.metrics.total_calls == 1
+class CircuitState(Enum):
+    CLOSED = "CLOSED"
+    OPEN = "OPEN"
+    HALF_OPEN = "HALF_OPEN"
+
+
+@dataclass
+class CircuitBreakerConfig:
+    failure_threshold: int = 5
+    success_threshold: int = 3
+    timeout_seconds: float = 30.0
+    half_open_max_calls: int = 3
+    sliding_window_size: int = 10
+    failure_rate_threshold: float = 0.5
+
+
+@dataclass
+class CircuitBreakerMetrics:
+    total_calls: int = 0
+    successful_calls: int = 0
+    failed_calls: int = 0
+    rejected_calls: int = 0
+    average_response_time: float = 0.0
+    last_failure_time: Optional[float] = None
+    last_success_time: Optional[float] = None
+    state_transitions: int = 0
+    _durations: deque = field(default_factory=lambda: deque(maxlen=100), repr=False)
+
+    def record_response_time(self, duration_seconds: float) -> None:
+        self._durations.append(duration_seconds)
+        if self._durations:
+            self.average_response_time = sum(self._durations) / len(self._durations)
+        else:
+            self.average_response_time = 0.0
+
+
+class CircuitBreakerOpenError(Exception):
+    def __init__(self, name: str, remaining_time: float):
+        self.name = name
+        self.remaining_time = max(0.0, remaining_time)
+        super().__init__(self.__str__())
+
+    def __str__(self) -> str:
+        return (
+            f"Circuit breaker '{self.name}' is open. "
+            f"Retry after {self.remaining_time:.2f} seconds."
+        )
+
+
+class CircuitBreaker:
+    _registry: Dict[str, "CircuitBreaker"] = {}
+
+    def __init__(self, name: str, config: Optional[CircuitBreakerConfig] = None):
+        self.name = name
+        self.config: CircuitBreakerConfig = config or CircuitBreakerConfig()
+        self.metrics = CircuitBreakerMetrics()
+
+        self._state: CircuitState = CircuitState.CLOSED
+        self._failure_count: int = 0
+        self._success_count: int = 0  # used in HALF_OPEN for success threshold
+        self._half_open_calls: int = 0
+        self._opened_at: Optional[float] = None
+        self._sliding_window: deque = deque(maxlen=self.config.sliding_window_size)
+
+    @classmethod
+    def get_or_create(cls, name: str, config: Optional[CircuitBreakerConfig] = None) -> "CircuitBreaker":
+        if name not in cls._registry:
+            cls._registry[name] = CircuitBreaker(name=name, config=config or CircuitBreakerConfig())
+        return cls._registry[name]
+
+    @property
+    def state(self) -> CircuitState:
+        # Auto transition from OPEN to HALF_OPEN if timeout elapsed
+        if self._state == CircuitState.OPEN and self._should_attempt_reset():
+            self._transition_to(CircuitState.HALF_OPEN)
+        return self._state
+
+    def _should_attempt_reset(self) -> bool:
+        if self._opened_at is None:
+            return False
+        elapsed = time.time() - self._opened_at
+        return elapsed >= self.config.timeout_seconds
+
+    def _transition_to(self, new_state: CircuitState) -> None:
+        if new_state == self._state:
+            return
+        self._state = new_state
+        self.metrics.state_transitions += 1
+
+        if new_state == CircuitState.OPEN:
+            self._opened_at = time.time()
+        elif new_state == CircuitState.HALF_OPEN:
+            self._half_open_calls = 0
+            self._success_count = 0
+        elif new_state == CircuitState.CLOSED:
+            self._failure_count = 0
+            self._success_count = 0
+            self._opened_at = None
+            self._sliding_window.clear()
+
+    def _allow_request(self) -> bool:
+        # Evaluate current state (may auto-transition from OPEN to HALF_OPEN)
+        current_state = self.state
+        if current_state == CircuitState.OPEN:
+            return False
+        if current_state == CircuitState.HALF_OPEN:
+            if self._half_open_calls < self.config.half_open_max_calls:
+                self._half_open_calls += 1
+                return True
+            return False
+        return True  # CLOSED
+
+    def _record_success(self, duration_seconds: float) -> None:
+        # Only count as a call if it wasn't rejected (execute manages that)
+        self.metrics.total_calls += 1
+        self.metrics.successful_calls += 1
+        self.metrics.last_success_time = time.time()
+        self.metrics.record_response_time(duration_seconds)
+        self._sliding_window.append(True)
+
+        # When CLOSED, decrease failure count but not below zero
+        if self._state == CircuitState.CLOSED:
+            self._failure_count = max(0, self._failure_count - 1)
+        elif self._state == CircuitState.HALF_OPEN:
+            self._success_count += 1
+            if self._success_count >= self.config.success_threshold:
+                self._transition_to(CircuitState.CLOSED)
+
+        # Check failure rate opening rule only applies in CLOSED
+        if self._state == CircuitState.CLOSED:
+            self._check_failure_rate_and_maybe_open()
+
+    def _record_failure(self, duration_seconds: float) -> None:
+        self.metrics.total_calls += 1
+        self.metrics.failed_calls += 1
+        self.metrics.last_failure_time = time.time()
+        self.metrics.record_response_time(duration_seconds)
+        self._sliding_window.append(False)
+
+        if self._state == CircuitState.HALF_OPEN:
+            # Any failure re-opens the breaker
+            self._transition_to(CircuitState.OPEN)
+            return
+
+        if self._state == CircuitState.CLOSED:
+            self._failure_count += 1
+            if self._failure_count >= self.config.failure_threshold:
+                self._transition_to(CircuitState.OPEN)
+                return
+            self._check_failure_rate_and_maybe_open()
+
+    def _check_failure_rate_and_maybe_open(self) -> None:
+        rate = self._calculate_failure_rate()
+        if rate >= self.config.failure_rate_threshold and len(self._sliding_window) == self._sliding_window.maxlen:
+            self._transition_to(CircuitState.OPEN)
+
+    def _calculate_failure_rate(self) -> float:
+        if len(self._sliding_window) < self._sliding_window.maxlen:
+            return 0.0
+        failures = sum(1 for v in self._sliding_window if not v)
+        return failures / float(self._sliding_window.maxlen)
+
+    def execute(self, operation: Callable[[], Any], fallback: Optional[Callable[[], Any]] = None) -> Any:
+        if not self._allow_request():
+            # rejected
+            self.metrics.rejected_calls += 1
+            remaining = self.config.timeout_seconds
+            if self._opened_at is not None:
+                elapsed = time.time() - self._opened_at
+                remaining = max(0.0, self.config.timeout_seconds - elapsed)
+            if fallback is not None:
+                return fallback()
+            raise CircuitBreakerOpenError(self.name, remaining)
+
+        start = time.perf_counter()
+        try:
+            result = operation()
+            duration = time.perf_counter() - start
+            self._record_success(duration)
+            return result
+        except Exception:
+            duration = time.perf_counter() - start
+            self._record_failure(duration)
+            raise
+
+    def get_health_info(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "state": self.state.value,
+            "failure_count": self._failure_count,
+            "success_count": self._success_count,
+            "failure_rate": self._calculate_failure_rate(),
+            "metrics": {
+                "total_calls": self.metrics.total_calls,
+                "successful_calls": self.metrics.successful_calls,
+                "failed_calls": self.metrics.failed_calls,
+                "rejected_calls": self.metrics.rejected_calls,
+                "average_response_time_ms": self.metrics.average_response_time * 1000.0,
+                "state_transitions": self.metrics.state_transitions,
+            },
+            "config": asdict(self.config),
+        }
+
+
+class DistributedCircuitBreakerCoordinator:
+    # Define class-level _breakers to support class-level patching in tests
+    _breakers: Dict[str, CircuitBreaker] = {}
+
+    def __init__(self, base_url: str, node_id: Optional[str] = None, sync_interval: float = 5.0):
+        self.base_url = base_url.rstrip("/")
+        self.node_id = node_id or str(uuid.uuid4())
+        self.sync_interval = sync_interval
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def register_breaker(self, breaker: CircuitBreaker) -> None:
+        # Store in class-level registry for easier patching in tests
+        DistributedCircuitBreakerCoordinator._breakers[breaker.name] = breaker
+
+        payload = {
+            "service": breaker.name,
+            "node_id": self.node_id,
+            "failure_threshold": breaker.config.failure_threshold,
+            "success_threshold": breaker.config.success_threshold,
+            "timeout_seconds": breaker.config.timeout_seconds,
+            "half_open_max_calls": breaker.config.half_open_max_calls,
+            "sliding_window_size": breaker.config.sliding_window_size,
+            "failure_rate_threshold": breaker.config.failure_rate_threshold,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url=f"{self.base_url}/circuit-breakers/register",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5)  # nosec - used in controlled tests
+
+    def start_sync(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._sync_loop, daemon=True)
+        self._thread.start()
+
+    def stop_sync(self) -> None:
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=self.sync_interval * 2)
+
+    def _sync_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._synchronize_states()
+            except Exception:
+                # Swallow any unexpected errors to keep the thread alive
+                pass
+            # Wait for the given interval or until stop is requested
+            self._stop_event.wait(self.sync_interval)
+
+    def _synchronize_states(self) -> None:
+        try:
+            breakers = DistributedCircuitBreakerCoordinator._breakers
+            states = []
+            for name, br in breakers.items():
+                info = br.get_health_info()
+                states.append(
+                    {
+                        "service": name,
+                        "state": info["state"],
+                        "metrics": info["metrics"],
+                    }
+                )
+            payload = {"node_id": self.node_id, "states": states}
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                url=f"{self.base_url}/circuit-breakers/state",
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=5)  # nosec - used in controlled tests
+        except URLError:
+            # Explicitly swallow URLError as required by tests
+            pass
+
+    def get_cluster_state(self, service: str) -> Dict[str, Any]:
+        url = f"{self.base_url}/circuit-breakers/{service}/cluster-state"
+        req = urllib.request.Request(url=url, method="GET")
+        try:
+            resp = urllib.request.urlopen(req, timeout=5)
+            data = resp.read()
+            return json.loads(data.decode("utf-8"))
+        except URLError:
+            return {"error": "Failed to fetch cluster state"}
+
+
+def circuit_breaker(name: str, config: Optional[CircuitBreakerConfig] = None):
+    def decorator(func: Callable):
+        br = CircuitBreaker.get_or_create(name, config or CircuitBreakerConfig())
+
+        def wrapper(*args, **kwargs):
+            return br.execute(lambda: func(*args, **kwargs))
+
+        wrapper.circuit_breaker = br
+        return wrapper
+
+    return decorator

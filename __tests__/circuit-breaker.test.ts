@@ -1,4 +1,13 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+// Minimal ambient declarations to satisfy TypeScript without relying on external test type packages.
+declare const describe: any
+declare const it: any
+declare const expect: any
+declare const beforeEach: any
+declare const afterEach: any
+declare const jest: any
+
 // Ensure this file never executes outside Jest (some CI runners may attempt to execute
 // test files with non-jest tooling and choke on jest.mock / ESM interop).
 const isJestRuntime =
@@ -9,7 +18,7 @@ const isJestRuntime =
 
 const noop: any = () => {}
 noop.skip = noop
-const maybeDescribe: typeof describe = isJestRuntime ? describe : (noop as any)
+const maybeDescribe: any = isJestRuntime && typeof describe === 'function' ? describe : noop
 
 if (isJestRuntime) {
   jest.mock('date-fns', () => {
@@ -64,14 +73,18 @@ if (isJestRuntime) {
   })
 }
 
-let format: any, subMonths: any, useMedia: any, getRedisClient: any
+let format: any
+let subMonths: any
+let useMedia: any
+let getRedisClient: any
+
 if (isJestRuntime) {
   ;({ format, subMonths } = require('date-fns'))
   ;({ useMedia } = require('react-use'))
   ;({ getRedisClient } = require('@/config/redis'))
 }
 
-if (isJestRuntime) {
+if (isJestRuntime && typeof afterEach === 'function') {
   afterEach(() => {
     jest.clearAllMocks()
   })
@@ -97,38 +110,56 @@ maybeDescribe('external dependency mocks behave deterministically', () => {
   })
 })
 
-maybeDescribe('redis client behavior (mocked)', () => {
-  it('set/get roundtrip works and returns null for missing keys', async () => {
+maybeDescribe('redis client mock behaves like naive in-memory redis', () => {
+  it('supports set/get/del/quit with expected results', async () => {
     const client = await getRedisClient()
-    const missing = await client.get('missing')
-    expect(missing).toBeNull()
 
-    const setRes = await client.set('foo', 'bar')
-    expect(setRes).toBe('OK')
+    const g1 = await client.get('key')
+    expect(g1).toBeNull()
 
-    const got = await client.get('foo')
-    expect(got).toBe('bar')
+    const s1 = await client.set('key', 'value')
+    expect(s1).toBe('OK')
+    expect(client.set).toHaveBeenCalledTimes(1)
+
+    const g2 = await client.get('key')
+    expect(g2).toBe('value')
+    expect(client.get).toHaveBeenCalledTimes(2) // one before set, one after set
+
+    const d1 = await client.del('key')
+    expect(d1).toBe(1)
+    expect(client.del).toHaveBeenCalledTimes(1)
+
+    const g3 = await client.get('key')
+    expect(g3).toBeNull()
+
+    const d2 = await client.del('key')
+    expect(d2).toBe(0)
+
+    const q = await client.quit()
+    expect(q).toBe('OK')
+    expect(client.quit).toHaveBeenCalledTimes(1)
   })
 
-  it('del removes keys and reports existence', async () => {
-    const client = await getRedisClient()
+  it('creates isolated client instances (separate in-memory stores)', async () => {
+    const clientA = await getRedisClient()
+    const clientB = await getRedisClient()
 
-    // deleting non-existent key
-    const delMissing = await client.del('nope')
-    expect(delMissing).toBe(0)
+    await clientA.set('onlyA', 'A')
+    const aGetA = await clientA.get('onlyA')
+    const bGetA = await clientB.get('onlyA')
 
-    // set and delete existing key
-    await client.set('k', 'v')
-    const delExisting = await client.del('k')
-    expect(delExisting).toBe(1)
+    expect(aGetA).toBe('A')
+    expect(bGetA).toBeNull()
 
-    const after = await client.get('k')
-    expect(after).toBeNull()
-  })
+    await clientB.set('onlyB', 'B')
+    const aGetB = await clientA.get('onlyB')
+    const bGetB = await clientB.get('onlyB')
 
-  it('quit resolves with OK', async () => {
-    const client = await getRedisClient()
-    const res = await client.quit()
-    expect(res).toBe('OK')
+    expect(aGetB).toBeNull()
+    expect(bGetB).toBe('B')
+
+    // verify the internal stores reflect isolation
+    expect(Object.keys(clientA.__store)).toEqual(['onlyA'])
+    expect(Object.keys(clientB.__store)).toEqual(['onlyB'])
   })
 })

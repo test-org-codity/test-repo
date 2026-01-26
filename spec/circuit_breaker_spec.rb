@@ -10,9 +10,9 @@ RSpec.describe Net::HTTP do
       expect(http.port).to eq(80)
     end
 
-    it 'defaults port to Net::HTTP.default_port when only host is provided' do
+    it 'defaults port to Net::HTTP.http_default_port when only host is provided' do
       http = described_class.new('example.com')
-      expect(http.port).to eq(described_class.default_port)
+      expect(http.port).to eq(described_class.http_default_port)
     end
   end
 
@@ -29,9 +29,9 @@ RSpec.describe Net::HTTP do
       expect(http.port).to eq(443)
     end
 
-    it 'defaults to Net::HTTP.default_port when port is not provided' do
+    it 'defaults to Net::HTTP.http_default_port when port is not provided' do
       http = described_class.new('example.com')
-      expect(http.port).to eq(described_class.default_port)
+      expect(http.port).to eq(described_class.http_default_port)
     end
   end
 end

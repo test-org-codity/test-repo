@@ -31,7 +31,9 @@ if (isJestRuntime) {
   jest.mock('date-fns', () => ({
     ...(jest.requireActual('date-fns') as any),
     format: jest.fn((_date: Date, _fmt: string) => '2024-01-01'),
-    subMonths: jest.fn((_date: Date, _months: number) => new Date('2024-01-01T00:00:00.000Z')),
+    subMonths: jest.fn(
+      (_date: Date, _months: number) => new Date('2024-01-01T00:00:00.000Z'),
+    ),
   }))
 
   // Mock react-use while preserving other exports
@@ -83,43 +85,48 @@ if (isJestRuntime) {
 maybeDescribe('infrastructure sanity tests', () => {
   it('date-fns mocks behave as expected', () => {
     const d = new Date('2023-05-05T00:00:00.000Z')
+    expect(typeof format).toBe('function')
     expect(format(d, 'yyyy-MM-dd')).toBe('2024-01-01')
     const sub = subMonths(d, 2)
     expect(sub).toBeInstanceOf(Date)
     expect(sub.toISOString()).toBe('2024-01-01T00:00:00.000Z')
   })
 
-  it('react-use useMedia mock returns false', () => {
+  it('react-use useMedia mock behaves as expected', () => {
+    expect(typeof useMedia).toBe('function')
     expect(useMedia('(min-width: 768px)')).toBe(false)
   })
 
-  it('redis mock client stores and retrieves values', async () => {
+  it('redis mock client behaves as expected', async () => {
     const client = await getRedisClient()
-    await client.set('foo', 'bar')
-    await expect(client.get('foo')).resolves.toBe('bar')
-    await expect(client.get('missing')).resolves.toBeNull()
+    expect(client).toBeDefined()
+    expect(typeof client.get).toBe('function')
+    expect(typeof client.set).toBe('function')
+    expect(typeof client.del).toBe('function')
+
+    const key = 'test-key'
+    const value = 'test-value'
+
+    const initial = await client.get(key)
+    expect(initial).toBeNull()
+
+    const setRes = await client.set(key, value)
+    expect(setRes).toBe('OK')
+
+    const afterSet = await client.get(key)
+    expect(afterSet).toBe(value)
+
+    const delRes = await client.del(key)
+    expect(delRes).toBe(1)
+
+    const afterDel = await client.get(key)
+    expect(afterDel).toBeNull()
   })
 
-  it('redis mock client deletes keys', async () => {
-    const client = await getRedisClient()
-    await client.set('key', 'value')
-    await expect(client.del('key')).resolves.toBe(1)
-    await expect(client.del('key')).resolves.toBe(0)
-  })
-})
-
-maybeDescribe('placeholder tests to keep suite green', () => {
-  beforeEach(() => {
-    if (!isJestRuntime) return
-    jest.clearAllMocks()
-  })
-
-  afterEach(() => {
-    if (!isJestRuntime) return
-    jest.clearAllMocks()
-  })
-
-  it('always passes true === true', () => {
-    expect(true).toBe(true)
+  it('jest globals are available and consistent', () => {
+    expect(typeof describe).toBe('function')
+    expect(typeof it).toBe('function')
+    expect(typeof expect).toBe('function')
+    expect(typeof jest).toBe('object')
   })
 })

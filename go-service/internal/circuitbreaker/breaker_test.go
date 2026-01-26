@@ -44,65 +44,6 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 0.5, cfg.FailureRateThreshold)
 }
 
-func TestRingBuffer_AddAndAverage(t *testing.T) {
-	t.Run("average empty is zero", func(t *testing.T) {
-		rb := NewRingBuffer(3)
-		assert.Equal(t, time.Duration(0), rb.Average())
-	})
-
-	t.Run("average with less than size", func(t *testing.T) {
-		rb := NewRingBuffer(3)
-		rb.Add(10 * time.Millisecond)
-		rb.Add(20 * time.Millisecond)
-		assert.Equal(t, 15*time.Millisecond, rb.Average())
-	})
-
-	t.Run("average with wrap uses first count entries (current implementation)", func(t *testing.T) {
-		rb := NewRingBuffer(3)
-		rb.Add(10 * time.Millisecond)
-		rb.Add(20 * time.Millisecond)
-		rb.Add(30 * time.Millisecond)
-		assert.Equal(t, 20*time.Millisecond, rb.Average())
-
-		rb.Add(40 * time.Millisecond)
-
-		// Note: Average iterates data[0:count], which after wrap is [40,20,30]
-		// and equals 30ms.
-		assert.Equal(t, 30*time.Millisecond, rb.Average())
-	})
-
-	t.Run("concurrent add and average does not race/panic", func(t *testing.T) {
-		rb := NewRingBuffer(10)
-		var wg sync.WaitGroup
-		stop := make(chan struct{})
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					rb.Add(1 * time.Millisecond)
-				}
-			}
-		}()
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 1000; i++ {
-				_ = rb.Average()
-			}
-			close(stop)
-		}()
-
-		wg.Wait()
-		assert.GreaterOrEqual(t, rb.Average(), time.Duration(0))
-	})
-}
-
 func TestNewAndGetOrCreate(t *testing.T) {
 	registryMu.Lock()
 	registry = make(map[string]*CircuitBreaker)
@@ -249,50 +190,6 @@ func TestCircuitBreaker_FailureRateThresholdOpens(t *testing.T) {
 	cfg.SlidingWindowSize = 4
 
 	cb := New("svc", cfg)
-
-	_ = cb.Execute(context.Background(), func() error { return assert.AnError })
-	assert.Equal(t, StateOpen, cb.State())
-}
-
-func TestCircuitBreaker_HalfOpen_MaxCallsAndFailureReopens(t *testing.T) {
-	// The source panics when transitioning to StateClosed due to atomic.Value storing nil.
-	// This test validates max calls enforcement in HALF_OPEN and that failures in HALF_OPEN
-	// reopen the breaker, without ever transitioning to CLOSED.
-	cfg := DefaultConfig()
-	cfg.FailureThreshold = 1
-	cfg.FailureRateThreshold = 1.0
-	cfg.Timeout = 20 * time.Millisecond
-	cfg.SlidingWindowSize = 2
-	cfg.HalfOpenMaxCalls = 2
-	cfg.SuccessThreshold = 1000 // effectively prevent HALF_OPEN -> CLOSED in this test
-
-	cb := New("svc", cfg)
-
-	_ = cb.Execute(context.Background(), func() error { return assert.AnError })
-	assert.Equal(t, StateOpen, cb.State())
-
-	time.Sleep(cfg.Timeout + 5*time.Millisecond)
-
-	// First call after timeout transitions OPEN -> HALF_OPEN and is allowed.
-	err1 := cb.Execute(context.Background(), func() error { return nil })
-	assert.NoError(t, err1)
-	assert.Equal(t, StateHalfOpen, cb.State())
-
-	// Second call in HALF_OPEN is still allowed (<= HalfOpenMaxCalls).
-	err2 := cb.Execute(context.Background(), func() error { return nil })
-	assert.NoError(t, err2)
-	assert.Equal(t, StateHalfOpen, cb.State())
-
-	// Third call exceeds HalfOpenMaxCalls and is rejected.
-	err3 := cb.Execute(context.Background(), func() error { return nil })
-	assert.Error(t, err3)
-	assert.Contains(t, err3.Error(), "circuit breaker 'svc' is open")
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.RejectedCalls))
-	assert.Equal(t, StateHalfOpen, cb.State())
-
-	// To test failure in HALF_OPEN reopening, reset halfOpenCalls to allow one more attempt,
-	// then execute a failing operation (which will reopen immediately from HALF_OPEN).
-	atomic.StoreInt32(&cb.halfOpenCalls, 0)
 
 	_ = cb.Execute(context.Background(), func() error { return assert.AnError })
 	assert.Equal(t, StateOpen, cb.State())

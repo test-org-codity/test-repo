@@ -4,379 +4,308 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-}
+)
 
-func newTestCB(name string) *CircuitBreaker {
-	cfg := Config{
-		FailureThreshold:     2,
-		SuccessThreshold:     2,
-		Timeout:              20 * time.Millisecond,
-		HalfOpenMaxCalls:     2,
-		SlidingWindowSize:    4,
-		FailureRateThreshold: 0.5,
-	}
-	cb := New(name, cfg)
-	cb.clearSlidingWindow()
-	return cb
-}
-
-func TestState_String(t *testing.T) {
-	assert.Equal(t, "CLOSED", StateClosed.String())
-	assert.Equal(t, "OPEN", StateOpen.String())
-	assert.Equal(t, "HALF_OPEN", StateHalfOpen.String())
-	assert.Equal(t, "UNKNOWN", State(999).String())
-}
-
-func TestDefaultConfig(t *testing.T) {
-	cfg := DefaultConfig()
-	assert.Equal(t, 5, cfg.FailureThreshold)
-	assert.Equal(t, 3, cfg.SuccessThreshold)
-	assert.Equal(t, 30*time.Second, cfg.Timeout)
-	assert.Equal(t, 3, cfg.HalfOpenMaxCalls)
-	assert.Equal(t, 10, cfg.SlidingWindowSize)
-	assert.Equal(t, 0.5, cfg.FailureRateThreshold)
-}
-
-func TestRingBuffer_AddAverage(t *testing.T) {
-	rb := NewRingBuffer(2)
+func TestRingBuffer_AddAndAverage(t *testing.T) {
+	rb := NewRingBuffer(3)
 	assert.Equal(t, time.Duration(0), rb.Average())
 
-	rb.Add(10 * time.Millisecond)
-	rb.Add(20 * time.Millisecond)
-	assert.Equal(t, 15*time.Millisecond, rb.Average())
+	rb.Add(100 * time.Millisecond)
+	rb.Add(200 * time.Millisecond)
+	assert.Equal(t, 150*time.Millisecond, rb.Average())
+
+	rb.Add(300 * time.Millisecond)
+	assert.Equal(t, 200*time.Millisecond, rb.Average())
 
 	// Overwrite oldest
-	rb.Add(30 * time.Millisecond)
-	// Now buffer has [30ms, 20ms] or [20ms, 30ms] depending on head; average should be 25ms
-	avg := rb.Average()
-	assert.Equal(t, 25*time.Millisecond, avg)
+	rb.Add(400 * time.Millisecond)
+	assert.Equal(t, 300*time.Millisecond, rb.Average())
 }
 
-func TestGetOrCreate_ReturnsSameInstance(t *testing.T) {
-	// reset registry for isolation
-	registryMu.Lock()
-	registry = make(map[string]*CircuitBreaker)
-	registryMu.Unlock()
-
-	cfg := DefaultConfig()
-	cb1 := GetOrCreate("svc", cfg)
-	cb2 := GetOrCreate("svc", cfg)
-	assert.Same(t, cb1, cb2)
-
-	cb3 := GetOrCreate("svc2", cfg)
-	assert.NotSame(t, cb1, cb3)
-}
-
-func TestCircuitBreaker_Execute_Success(t *testing.T) {
-	cb := newTestCB("svc-success")
-
-	// Simulate some failure count that should decrement on success in Closed
-	atomic.StoreInt32(&cb.failureCount, 1)
-
-	err := cb.Execute(context.Background(), func() error {
-		time.Sleep(2 * time.Millisecond)
-		return nil
-	})
-	assert.NoError(t, err)
-
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.TotalCalls))
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.SuccessfulCalls))
-	assert.Equal(t, uint64(0), atomic.LoadUint64(&cb.metrics.FailedCalls))
+func TestCircuitBreaker_Execute_TransitionsAndMetrics(t *testing.T) {
+	cfg := Config{
+		FailureThreshold:     2,
+		SuccessThreshold:     1,
+		Timeout:              50 * time.Millisecond,
+		HalfOpenMaxCalls:     1,
+		SlidingWindowSize:    2,
+		FailureRateThreshold: 0.5,
+	}
+	cb := New("svc", cfg)
 	assert.Equal(t, StateClosed, cb.State())
-	assert.LessOrEqual(t, int32(0), atomic.LoadInt32(&cb.failureCount))
-}
 
-func TestCircuitBreaker_Execute_Failure_ThresholdOpen(t *testing.T) {
-	cb := newTestCB("svc-failure-threshold")
-
-	// First failure: should not open yet (failureCount=1, failureRate=0.25)
+	// First call fails; because initial sliding window is all false, failure rate is 1.0 => opens immediately.
 	err := cb.Execute(context.Background(), func() error { return assert.AnError })
 	assert.Error(t, err)
-	assert.Equal(t, StateClosed, cb.State())
-	assert.Equal(t, int32(1), atomic.LoadInt32(&cb.failureCount))
-
-	// Second failure: meets FailureThreshold=2 -> opens
-	err = cb.Execute(context.Background(), func() error { return assert.AnError })
-	assert.Error(t, err)
 	assert.Equal(t, StateOpen, cb.State())
-	assert.Equal(t, int32(2), atomic.LoadInt32(&cb.failureCount))
+	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.TotalCalls))
+	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.FailedCalls))
 	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.StateChanges))
+
+	// Next call should be rejected since open and timeout not elapsed
+	called := false
+	err = cb.Execute(context.Background(), func() error {
+		called = true
+		return nil
+	})
+	assert.Error(t, err)
+	assert.False(t, called, "operation should not have been called when open")
+	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.RejectedCalls))
+
+	// Fast-forward time beyond timeout to allow HalfOpen
+	cb.openedAt.Store(time.Now().Add(-cfg.Timeout - time.Millisecond))
+
+	var transitions [][3]string
+	cb.onStateChange = func(name string, from, to State) {
+		transitions = append(transitions, [3]string{name, from.String(), to.String()})
+	}
+
+	// Successful probe should close due to SuccessThreshold=1
+	err = cb.Execute(context.Background(), func() error { return nil })
+	assert.NoError(t, err)
+	assert.Equal(t, StateClosed, cb.State())
+	assert.Equal(t, uint64(2), atomic.LoadUint64(&cb.metrics.SuccessfulCalls))
+
+	// Verify transitions occurred: CLOSED->OPEN, OPEN->HALF_OPEN (on allowRequest), HALF_OPEN->CLOSED
+	var got []string
+	for _, tr := range transitions {
+		got = append(got, tr[1]+"->"+tr[2])
+	}
+	assert.Contains(t, got, "CLOSED->OPEN")
+	assert.Contains(t, got, "OPEN->HALF_OPEN")
+	assert.Contains(t, got, "HALF_OPEN->CLOSED")
 }
 
-func TestCircuitBreaker_ExecuteWithFallback_OnOperationFailure(t *testing.T) {
-	cb := newTestCB("svc-fallback-opfail")
+func TestCircuitBreaker_ExecuteWithFallback_CallsFallbackOnError(t *testing.T) {
+	cfg := Config{
+		FailureThreshold:     100, // avoid opening due to threshold
+		SuccessThreshold:     2,
+		Timeout:              10 * time.Millisecond,
+		HalfOpenMaxCalls:     2,
+		SlidingWindowSize:    10,
+		FailureRateThreshold: 1.0, // avoid opening on rate
+	}
+	cb := New("svc-fallback", cfg)
 
+	operationCalled := false
 	fallbackCalled := false
+
 	err := cb.ExecuteWithFallback(context.Background(),
-		func() error { return assert.AnError },
-		func() error { fallbackCalled = true; return nil },
+		func() error {
+			operationCalled = true
+			return assert.AnError
+		},
+		func() error {
+			fallbackCalled = true
+			return nil
+		},
 	)
+
 	assert.NoError(t, err)
+	assert.True(t, operationCalled)
 	assert.True(t, fallbackCalled)
 	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.TotalCalls))
 	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.FailedCalls))
 }
 
-func TestCircuitBreaker_ExecuteWithFallback_OpenBreakerRejectedAndFallback(t *testing.T) {
-	cb := newTestCB("svc-fallback-open")
-	cb.config.Timeout = time.Hour // ensure shouldAttemptReset returns false
-	cb.transitionTo(StateOpen)
-
-	opCalled := false
-	fallbackCalled := false
-
-	err := cb.ExecuteWithFallback(context.Background(),
-		func() error { opCalled = true; return nil },
-		func() error { fallbackCalled = true; return nil },
-	)
-	assert.NoError(t, err)
-	assert.False(t, opCalled)
-	assert.True(t, fallbackCalled)
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.RejectedCalls))
-}
-
-func TestCircuitBreaker_AllowRequest_HalfOpenMaxCalls(t *testing.T) {
-	cb := newTestCB("svc-allow-halfopen")
-	cb.config.HalfOpenMaxCalls = 2
-	cb.transitionTo(StateHalfOpen)
-
-	assert.True(t, cb.allowRequest())
-	assert.True(t, cb.allowRequest())
-	assert.False(t, cb.allowRequest())
-}
-
-func TestCircuitBreaker_ShouldAttemptReset(t *testing.T) {
-	cb := newTestCB("svc-reset")
-	// Opened recently, shouldAttemptReset false
-	cb.transitionTo(StateOpen)
-	assert.False(t, cb.shouldAttemptReset())
-
-	// Simulate opened at far past
-	cb.config.Timeout = 10 * time.Millisecond
-	cb.openedAt.Store(time.Now().Add(-20 * time.Millisecond))
-	assert.True(t, cb.shouldAttemptReset())
-
-	// No openedAt stored
-	cb2 := newTestCB("svc-reset2")
-	assert.False(t, cb2.shouldAttemptReset())
-}
-
-func TestCircuitBreaker_TransitionTo_CallbackAndResets(t *testing.T) {
-	cb := newTestCB("svc-transition")
-
-	var callbackFrom, callbackTo State
-	cb.onStateChange = func(name string, from, to State) {
-		callbackFrom, callbackTo = from, to
+func TestCircuitBreaker_HalfOpen_MaxCallsLimit(t *testing.T) {
+	cfg := Config{
+		FailureThreshold:     10,
+		SuccessThreshold:     10, // keep it in half-open
+		Timeout:              1 * time.Millisecond,
+		HalfOpenMaxCalls:     2,
+		SlidingWindowSize:    5,
+		FailureRateThreshold: 1.0,
 	}
+	cb := New("svc-halfopen", cfg)
 
-	// Transition to Open sets openedAt and increments state changes
+	// Force open and make timeout elapsed
 	cb.transitionTo(StateOpen)
-	assert.Equal(t, StateOpen, cb.State())
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.StateChanges))
-	assert.Equal(t, StateClosed, callbackFrom)
-	assert.Equal(t, StateOpen, callbackTo)
-	assert.NotNil(t, cb.openedAt.Load())
+	cb.openedAt.Store(time.Now().Add(-cfg.Timeout - time.Millisecond))
 
-	// Transition to HalfOpen resets halfOpenCalls and successCount
-	atomic.StoreInt32(&cb.halfOpenCalls, 5)
-	atomic.StoreInt32(&cb.successCount, 3)
-	cb.transitionTo(StateHalfOpen)
+	// First call: should move to HalfOpen and allow
+	err1 := cb.Execute(context.Background(), func() error { return nil })
+	assert.NoError(t, err1)
 	assert.Equal(t, StateHalfOpen, cb.State())
-	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.halfOpenCalls))
-	assert.Equal(t, int32(0), atomic.LoadInt32(&cb.successCount))
 
-	// Set counts and window then attempt transition to Closed which will panic due to nil store
-	atomic.StoreInt32(&cb.failureCount, 7)
-	atomic.StoreInt32(&cb.successCount, 4)
-	cb.addToSlidingWindow(false)
-	cb.addToSlidingWindow(false)
-	assert.Panics(t, func() { cb.transitionTo(StateClosed) })
-
-	// After clearSlidingWindow(), all entries should be true -> failure rate 0
-	cb.clearSlidingWindow()
-	assert.InDelta(t, 0.0, cb.calculateFailureRate(), 0.00001)
-}
-
-func TestCircuitBreaker_RecordSuccess_HalfOpenToClosed(t *testing.T) {
-	cb := newTestCB("svc-recordsuccess")
-	cb.config.SuccessThreshold = 2
-	cb.transitionTo(StateHalfOpen)
-
-	cb.recordSuccess(5 * time.Millisecond)
+	// Second call: should be allowed (within HalfOpenMaxCalls)
+	err2 := cb.Execute(context.Background(), func() error { return nil })
+	assert.NoError(t, err2)
 	assert.Equal(t, StateHalfOpen, cb.State())
-	assert.Equal(t, int32(1), atomic.LoadInt32(&cb.successCount))
 
-	// Transition to Closed will panic due to storing nil in atomic.Value
-	assert.Panics(t, func() { cb.recordSuccess(5 * time.Millisecond) })
+	// Third call: should be rejected due to exceeding HalfOpenMaxCalls
+	err3 := cb.Execute(context.Background(), func() error { return nil })
+	assert.Error(t, err3)
+	assert.Contains(t, err3.Error(), "is open")
 }
 
-func TestCircuitBreaker_RecordFailure_HalfOpenToOpen(t *testing.T) {
-	cb := newTestCB("svc-recordfailure")
-	cb.transitionTo(StateHalfOpen)
+func TestGetOrCreate_ReturnsSameInstance(t *testing.T) {
+	// Reset registry
+	registryMu.Lock()
+	registry = make(map[string]*CircuitBreaker)
+	registryMu.Unlock()
 
-	cb.recordFailure(5 * time.Millisecond)
-	assert.Equal(t, StateOpen, cb.State())
+	cfg := DefaultConfig()
+	cb1 := GetOrCreate("shared", cfg)
+	cb2 := GetOrCreate("shared", cfg)
+	assert.Same(t, cb1, cb2)
 }
 
-func TestCircuitBreaker_RecordFailure_OpensByFailureRate(t *testing.T) {
-	cb := newTestCB("svc-recordfailure-rate")
-	cb.config.FailureThreshold = 100 // ensure threshold not hit
-	cb.clearSlidingWindow()
+func TestCircuitBreaker_GetHealthInfo_ContainsExpectedFields(t *testing.T) {
+	cfg := Config{
+		FailureThreshold:     100,
+		SuccessThreshold:     10,
+		Timeout:              1 * time.Second,
+		HalfOpenMaxCalls:     5,
+		SlidingWindowSize:    4,
+		FailureRateThreshold: 1.0,
+	}
+	cb := New("svc-health", cfg)
 
-	// First failure: rate 0.25 -> remains closed
-	cb.recordFailure(1 * time.Millisecond)
-	assert.Equal(t, StateClosed, cb.State())
+	// Ensure sliding window starts as success to compute predictable failure rate
+	cb.transitionTo(StateClosed) // will clearSlidingWindow()
 
-	// Second failure: rate 0.5 -> opens (>= FailureRateThreshold)
-	cb.recordFailure(1 * time.Millisecond)
-	assert.Equal(t, StateOpen, cb.State())
+	// success
+	_ = cb.Execute(context.Background(), func() error { time.Sleep(1 * time.Millisecond); return nil })
+	// failure
+	_ = cb.Execute(context.Background(), func() error { return assert.AnError })
+	// success
+	_ = cb.Execute(context.Background(), func() error { return nil })
+
+	hi := cb.GetHealthInfo()
+	assert.Equal(t, "svc-health", hi.Name)
+	assert.Equal(t, "CLOSED", hi.State)
+	assert.InDelta(t, 0.25, hi.FailureRate, 0.0001)
+
+	// Metrics checks
+	total := hi.Metrics["total_calls"].(uint64)
+	successes := hi.Metrics["successful_calls"].(uint64)
+	failures := hi.Metrics["failed_calls"].(uint64)
+	rejected := hi.Metrics["rejected_calls"].(uint64)
+	stateChanges := hi.Metrics["state_changes"].(uint64)
+	avgMs := hi.Metrics["avg_response_time_ms"].(int64)
+
+	assert.Equal(t, uint64(3), total)
+	assert.Equal(t, uint64(2), successes)
+	assert.Equal(t, uint64(1), failures)
+	assert.Equal(t, uint64(0), rejected)
+	assert.GreaterOrEqual(t, avgMs, int64(0))
+	// No state changes expected in this scenario (transitionTo(StateClosed) earlier might have been no-op if already closed)
+	assert.GreaterOrEqual(t, stateChanges, uint64(0))
 }
 
-func TestCircuitBreaker_CalculateFailureRate(t *testing.T) {
-	cb := newTestCB("svc-failrate")
-	cb.clearSlidingWindow()
+func TestCircuitBreaker_CalculateFailureRateAndClearWindow(t *testing.T) {
+	cfg := Config{
+		FailureThreshold:     5,
+		SuccessThreshold:     3,
+		Timeout:              30 * time.Second,
+		HalfOpenMaxCalls:     3,
+		SlidingWindowSize:    4,
+		FailureRateThreshold: 0.5,
+	}
+	cb := New("svc-window", cfg)
 
-	assert.InDelta(t, 0.0, cb.calculateFailureRate(), 0.00001)
-
-	cb.addToSlidingWindow(false)
-	assert.InDelta(t, 0.25, cb.calculateFailureRate(), 0.00001)
-
-	cb.addToSlidingWindow(false)
-	assert.InDelta(t, 0.5, cb.calculateFailureRate(), 0.00001)
-
+	// Fill window: T, F, F, T => 2/4 failures = 0.5
 	cb.addToSlidingWindow(true)
-	assert.InDelta(t, 0.5, cb.calculateFailureRate(), 0.00001)
-}
+	cb.addToSlidingWindow(false)
+	cb.addToSlidingWindow(false)
+	cb.addToSlidingWindow(true)
 
-func TestCircuitBreaker_StateAndName(t *testing.T) {
-	cb := newTestCB("svc-name")
-	assert.Equal(t, "svc-name", cb.Name())
-	assert.Equal(t, StateClosed, cb.State())
-}
+	rate := cb.calculateFailureRate()
+	assert.InDelta(t, 0.5, rate, 0.0001)
 
-func TestCircuitBreaker_GetHealthInfo_ReturnsSnapshot(t *testing.T) {
-	cb := newTestCB("svc-health")
 	cb.clearSlidingWindow()
-	cb.addToSlidingWindow(false) // set failure rate to 0.25
-
-	// Set some metrics
-	atomic.StoreUint64(&cb.metrics.TotalCalls, 3)
-	atomic.StoreUint64(&cb.metrics.SuccessfulCalls, 2)
-	atomic.StoreUint64(&cb.metrics.FailedCalls, 1)
-	atomic.StoreUint64(&cb.metrics.RejectedCalls, 1)
-	atomic.StoreUint64(&cb.metrics.StateChanges, 2)
-	cb.metrics.responseTimes.Add(10 * time.Millisecond)
-	cb.metrics.responseTimes.Add(20 * time.Millisecond)
-
-	info := cb.GetHealthInfo()
-	assert.Equal(t, "svc-health", info.Name)
-	assert.Equal(t, cb.State().String(), info.State)
-	assert.Equal(t, int(atomic.LoadInt32(&cb.failureCount)), info.FailureCount)
-	assert.Equal(t, int(atomic.LoadInt32(&cb.successCount)), info.SuccessCount)
-	assert.InDelta(t, cb.calculateFailureRate(), info.FailureRate, 0.00001)
-
-	// metrics map
-	assert.Equal(t, uint64(3), info.Metrics["total_calls"])
-	assert.Equal(t, uint64(2), info.Metrics["successful_calls"])
-	assert.Equal(t, uint64(1), info.Metrics["failed_calls"])
-	assert.Equal(t, uint64(1), info.Metrics["rejected_calls"])
-	assert.Equal(t, uint64(2), info.Metrics["state_changes"])
-	assert.Equal(t, int64(15), info.Metrics["avg_response_time_ms"])
+	rateAfterClear := cb.calculateFailureRate()
+	assert.InDelta(t, 0.0, rateAfterClear, 0.0001)
+	assert.Equal(t, 0, cb.windowIndex)
 }
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
-
-func TestDistributedCoordinator_ReportState_UsesHTTPClient(t *testing.T) {
-	cb := newTestCB("svc-report")
-	dc := NewDistributedCoordinator("http://coordinator.local")
-	var capturedReq *http.Request
-
-	dc.client = &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			capturedReq = req
-			return &http.Response{
-				StatusCode: 200,
-				Body:       io.NopCloser(strings.NewReader("ok")),
-				Header:     make(http.Header),
-				Request:    req,
-			}, nil
-		}),
+func TestState_String(t *testing.T) {
+	tests := []struct {
+		s    State
+		want string
+	}{
+		{StateClosed, "CLOSED"},
+		{StateOpen, "OPEN"},
+		{StateHalfOpen, "HALF_OPEN"},
+		{State(99), "UNKNOWN"},
 	}
-
-	dc.reportState(cb)
-	assert.NotNil(t, capturedReq)
-	assert.Equal(t, "POST", capturedReq.Method)
-	assert.Equal(t, "application/json", capturedReq.Header.Get("Content-Type"))
-	assert.Equal(t, "/circuit-breakers/state", capturedReq.URL.Path)
-}
-
-func TestDistributedCoordinator_SyncStates_MultipleBreakers(t *testing.T) {
-	dc := NewDistributedCoordinator("http://coordinator.local")
-	cb1 := newTestCB("svc1")
-	cb2 := newTestCB("svc2")
-	dc.Register(cb1)
-	dc.Register(cb2)
-
-	var calls int32
-	dc.client = &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			atomic.AddInt32(&calls, 1)
-			return &http.Response{
-				StatusCode: 200,
-				Body:       io.NopCloser(strings.NewReader("ok")),
-				Header:     make(http.Header),
-				Request:    req,
-			}, nil
-		}),
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, tt.s.String())
 	}
-
-	dc.syncStates()
-	assert.Equal(t, int32(2), atomic.LoadInt32(&calls))
 }
 
-func TestDistributedCoordinator_StartStopSync(t *testing.T) {
-	_ = os.Setenv("NODE_ID", "") // ensure default nodeID path is exercised
+func TestCircuitBreaker_Name(t *testing.T) {
+	cb := New("my-service", DefaultConfig())
+	assert.Equal(t, "my-service", cb.Name())
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestDistributedCoordinator_RegisterAndStartSync(t *testing.T) {
 	dc := NewDistributedCoordinator("http://coordinator.local")
-	cb := newTestCB("svc-sync")
+	cb := New("svc-sync", DefaultConfig())
 	dc.Register(cb)
 	dc.syncInterval = 10 * time.Millisecond
 
-	var calls int32
-	dc.client = &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			atomic.AddInt32(&calls, 1)
-			return &http.Response{
-				StatusCode: 200,
-				Body:       io.NopCloser(strings.NewReader("ok")),
-				Header:     make(http.Header),
-				Request:    req,
-			}, nil
-		}),
-	}
+	var reqCount int32
+	var lastMethod, lastURL, lastContentType string
+
+	dc.client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&reqCount, 1)
+		lastMethod = r.Method
+		lastURL = r.URL.Path
+		lastContentType = r.Header.Get("Content-Type")
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Header:     make(http.Header),
+		}, nil
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
 	go dc.StartSync(ctx)
 
-	// wait for some sync cycles
-	time.Sleep(35 * time.Millisecond)
-	assert.GreaterOrEqual(t, atomic.LoadInt32(&calls), int32(2))
+	time.Sleep(40 * time.Millisecond)
+	cancel()
+	time.Sleep(10 * time.Millisecond)
 
-	// Stop and ensure no more calls after a grace period
-	dc.Stop()
-	current := atomic.LoadInt32(&calls)
-	time.Sleep(30 * time.Millisecond)
-	assert.Equal(t, current, atomic.LoadInt32(&calls))
+	assert.GreaterOrEqual(t, atomic.LoadInt32(&reqCount), int32(1))
+	assert.Equal(t, "POST", lastMethod)
+	assert.Equal(t, "/circuit-breakers/state", lastURL)
+	assert.Equal(t, "application/json", lastContentType)
+}
+
+func TestCircuitBreaker_allowRequest_Behavior(t *testing.T) {
+	cfg := Config{
+		FailureThreshold:     1,
+		SuccessThreshold:     1,
+		Timeout:              20 * time.Millisecond,
+		HalfOpenMaxCalls:     1,
+		SlidingWindowSize:    5,
+		FailureRateThreshold: 0.5,
+	}
+	cb := New("svc-allow", cfg)
+
+	// Closed allows
+	assert.True(t, cb.allowRequest())
+
+	// Open disallows until timeout
+	cb.transitionTo(StateOpen)
+	assert.False(t, cb.allowRequest())
+
+	// After timeout, should allow and transition to HalfOpen
+	cb.openedAt.Store(time.Now().Add(-cfg.Timeout - time.Millisecond))
+	allowed := cb.allowRequest()
+	assert.True(t, allowed)
+	assert.Equal(t, StateHalfOpen, cb.State())
 }

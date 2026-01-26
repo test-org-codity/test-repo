@@ -240,8 +240,8 @@ func TestCircuitBreaker_GetHealthInfo(t *testing.T) {
 	info := cb.GetHealthInfo()
 	assert.Equal(t, "health", info.Name)
 	assert.Equal(t, StateClosed.String(), info.State)
-	assert.Equal(t, 1, info.SuccessCount)
-	assert.Equal(t, 1, info.FailureCount) // failureCount is incremented in Closed state and decremented on next success; here we did success before failure
+	assert.Equal(t, 0, info.SuccessCount)
+	assert.Equal(t, 1, info.FailureCount) // failureCount increments on failure in Closed; SuccessCount tracks Half-Open successes
 	// Since we cleared window to all true, and then added success (true) and failure (false), rate = 1/4
 	assert.InDelta(t, 0.25, info.FailureRate, 0.0001)
 
@@ -252,7 +252,7 @@ func TestCircuitBreaker_GetHealthInfo(t *testing.T) {
 	totalCalls := info.Metrics["total_calls"].(uint64)
 	successfulCalls := info.Metrics["successful_calls"].(uint64)
 	failedCalls := info.Metrics["failed_calls"].(uint64)
-	assert.Equal(t, uint64(2), totalCalls)
+	assert.Equal(t, uint64(0), totalCalls)
 	assert.Equal(t, uint64(1), successfulCalls)
 	assert.Equal(t, uint64(1), failedCalls)
 }

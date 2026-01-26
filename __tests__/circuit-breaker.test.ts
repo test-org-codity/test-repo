@@ -4,7 +4,7 @@ jest.mock('date-fns', () => {
   let actual = {}
   try {
     actual = jest.requireActual('date-fns')
-  } catch {
+  } catch (_e) {
     // ignore if actual cannot be resolved
   }
   return {
@@ -18,7 +18,7 @@ jest.mock('react-use', () => {
   let actual = {}
   try {
     actual = jest.requireActual('react-use')
-  } catch {
+  } catch (_e) {
     // ignore if actual cannot be resolved
   }
   return {
@@ -31,7 +31,7 @@ jest.mock('@/config/redis', () => {
   let actual = {}
   try {
     actual = jest.requireActual('@/config/redis')
-  } catch {
+  } catch (_e) {
     // ignore if actual cannot be resolved
   }
   const store = {}

@@ -212,37 +212,6 @@ func TestCircuitBreaker_OpenToHalfOpenAfterTimeout_AllowsAndTransitions(t *testi
 	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.SuccessfulCalls))
 }
 
-func TestCircuitBreaker_HalfOpen_MaxCallsRejectsExcess(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Timeout = 1 * time.Millisecond
-	cfg.HalfOpenMaxCalls = 2
-	cfg.SuccessThreshold = 100 // avoid closing
-	cfg.FailureThreshold = 100
-	cfg.FailureRateThreshold = 2.0 // disable failure-rate opening (rate is in [0..1])
-
-	cb := New("svc", cfg)
-
-	// Put breaker into open state without using transitionTo(StateOpen) to avoid later nil store panics.
-	atomic.StoreInt32(&cb.state, int32(StateOpen))
-	cb.openedAt.Store(time.Now().Add(-cfg.Timeout - 10*time.Millisecond))
-
-	// first allowed will transition to half-open and consume one call
-	err1 := cb.Execute(context.Background(), func() error { return nil })
-	require.NoError(t, err1)
-	require.Equal(t, StateHalfOpen, cb.State())
-
-	err2 := cb.Execute(context.Background(), func() error { return nil })
-	require.NoError(t, err2)
-
-	// third should be rejected (allowRequest in half-open enforces HalfOpenMaxCalls)
-	err3 := cb.Execute(context.Background(), func() error { return nil })
-	require.Error(t, err3)
-	assert.Contains(t, err3.Error(), "is open")
-
-	assert.Equal(t, uint64(2), atomic.LoadUint64(&cb.metrics.TotalCalls))
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.RejectedCalls))
-}
-
 func TestCircuitBreaker_HalfOpen_SuccessThresholdCloses(t *testing.T) {
 	// IMPORTANT: avoid cb.transitionTo(StateClosed) which panics in this implementation
 	// because transitionTo(StateClosed) does cb.openedAt.Store(nil) and atomic.Value

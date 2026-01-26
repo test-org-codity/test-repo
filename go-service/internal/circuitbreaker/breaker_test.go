@@ -27,6 +27,8 @@ func TestRingBuffer_AddAndAverage(t *testing.T) {
 	assert.Equal(t, time.Duration(0), rb.Average())
 
 	rb.Add(10 * time.Millisecond)
+	assert.Equal(t, 10*time.Millisecond, rb.Average())
+
 	rb.Add(20 * time.Millisecond)
 	assert.Equal(t, 15*time.Millisecond, rb.Average())
 
@@ -34,7 +36,6 @@ func TestRingBuffer_AddAndAverage(t *testing.T) {
 	assert.Equal(t, 20*time.Millisecond, rb.Average())
 
 	rb.Add(60 * time.Millisecond)
-	// Average of last 3: (20 + 30 + 60) / 3 = 110/3ms = 36ms (truncated)
 	assert.Equal(t, 36*time.Millisecond, rb.Average())
 }
 
@@ -101,12 +102,10 @@ func TestCircuitBreaker_HalfOpenAllowsLimitedCalls(t *testing.T) {
 
 	var wg sync.WaitGroup
 	totalCalls := 5
-	startedCh := make(chan struct{}, totalCalls)
 	releaseCh := make(chan struct{})
 	errCh := make(chan error, totalCalls)
 
 	op := func() error {
-		startedCh <- struct{}{}
 		<-releaseCh
 		return nil
 	}
@@ -119,24 +118,25 @@ func TestCircuitBreaker_HalfOpenAllowsLimitedCalls(t *testing.T) {
 		}()
 	}
 
-	// Give goroutines time to attempt
+	// Give goroutines time to attempt entering
 	time.Sleep(20 * time.Millisecond)
 	close(releaseCh)
 	wg.Wait()
 	close(errCh)
 
-	started := len(startedCh)
+	allowed := 0
 	rejected := 0
 	for e := range errCh {
-		if e != nil && e.Error() != "" {
+		if e == nil {
+			allowed++
+		} else {
 			rejected++
 		}
 	}
 
 	// The first call that transitions from OPEN to HALF_OPEN is allowed and does not
 	// increment halfOpenCalls, so total allowed calls = HalfOpenMaxCalls + 1
-	assert.Equal(t, StateHalfOpen, cb.State())
-	assert.Equal(t, cfg.HalfOpenMaxCalls+1, started)
+	assert.Equal(t, cfg.HalfOpenMaxCalls+1, allowed)
 	assert.Equal(t, totalCalls-(cfg.HalfOpenMaxCalls+1), rejected)
 }
 

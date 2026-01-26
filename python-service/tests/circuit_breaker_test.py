@@ -1,6 +1,6 @@
+from __future__ import annotations
+
 import json
-import threading
-import time
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -60,6 +60,13 @@ def breaker_small_window(small_window_config):
 def coordinator():
     """Create a DistributedCircuitBreakerCoordinator instance for testing."""
     return DistributedCircuitBreakerCoordinator(coordinator_url="http://coordinator", sync_interval=0.01)
+
+
+def _get_header_case_insensitive(headers: dict, name: str):
+    for k, v in headers.items():
+        if k.lower() == name.lower():
+            return v
+    raise KeyError(name)
 
 
 def test_circuit_state_enum_values():
@@ -211,6 +218,7 @@ def test_circuit_breaker_execute_success_records_metrics_and_returns_value(break
 
 def test_circuit_breaker_execute_failure_records_metrics_and_reraises(breaker):
     """Test execute records failure metrics and re-raises the underlying exception."""
+
     def op():
         raise ValueError("boom")
 
@@ -304,10 +312,18 @@ def test_circuit_breaker__record_success_half_open_closes_after_success_threshol
 
 
 def test_circuit_breaker__record_failure_half_open_opens_immediately(breaker):
-    """Test _record_failure in HALF_OPEN transitions back to OPEN."""
+    """
+    Test _record_failure in HALF_OPEN transitions back to OPEN.
+
+    Some implementations may first allow state recalculation via property access.
+    Ensure state evaluation occurs after recording the failure.
+    """
     breaker._transition_to(CircuitState.HALF_OPEN)
     with patch("src.circuit_breaker.time.time", return_value=400.0):
         breaker._record_failure(0.5)
+
+    # Force any lazy state transitions to be applied (if implemented in .state property)
+    _ = breaker.state
 
     assert breaker.state == CircuitState.OPEN
     assert breaker._opened_at == pytest.approx(400.0)
@@ -315,7 +331,11 @@ def test_circuit_breaker__record_failure_half_open_opens_immediately(breaker):
 
 
 def test_circuit_breaker__record_failure_closed_opens_on_failure_threshold(breaker):
-    """Test _record_failure transitions to OPEN when failure_threshold is reached."""
+    """
+    Test _record_failure transitions to OPEN when failure_threshold is reached.
+
+    Some implementations may move to HALF_OPEN via state property evaluation; ensure final state is OPEN.
+    """
     breaker.config.failure_threshold = 2
     breaker.config.sliding_window_size = 10  # keep default behavior
     breaker._sliding_window = breaker._sliding_window.__class__(maxlen=breaker.config.sliding_window_size)
@@ -324,6 +344,9 @@ def test_circuit_breaker__record_failure_closed_opens_on_failure_threshold(break
         breaker._record_failure(0.01)
         assert breaker.state == CircuitState.CLOSED
         breaker._record_failure(0.01)
+
+    # Force any lazy state transitions to be applied (if implemented in .state property)
+    _ = breaker.state
 
     assert breaker.state == CircuitState.OPEN
     assert breaker._opened_at == pytest.approx(500.0)
@@ -354,7 +377,11 @@ def test_circuit_breaker__calculate_failure_rate_correct_when_window_full(breake
 
 
 def test_circuit_breaker__record_failure_closed_opens_on_failure_rate_threshold(breaker_small_window):
-    """Test _record_failure opens circuit if sliding-window failure rate exceeds threshold."""
+    """
+    Test _record_failure opens circuit if sliding-window failure rate exceeds threshold.
+
+    Some implementations may apply transitions lazily; ensure final state is OPEN.
+    """
     b = breaker_small_window
     b.config.failure_rate_threshold = 0.5
     b.config.failure_threshold = 100  # rely on rate
@@ -365,6 +392,9 @@ def test_circuit_breaker__record_failure_closed_opens_on_failure_rate_threshold(
         b._record_success(0.01)  # window: F F T
         assert b.state == CircuitState.CLOSED  # not full yet => rate 0.0
         b._record_failure(0.01)  # window full: F F T F => rate 0.75 => open
+
+    # Force any lazy state transitions to be applied (if implemented in .state property)
+    _ = b.state
 
     assert b.state == CircuitState.OPEN
     assert b._calculate_failure_rate() == pytest.approx(3 / 4)
@@ -388,7 +418,8 @@ def test_circuit_breaker__record_success_closed_decrements_failure_count_not_bel
 def test_circuit_breaker_get_health_info_structure_and_values(breaker):
     """Test get_health_info returns expected structure and key values."""
     breaker.config.timeout_seconds = 30.0
-    with patch("src.circuit_breaker.time.time", side_effect=[700.0, 700.01, 700.02, 700.03]):
+    # execute() may call time.time() multiple times; avoid StopIteration by providing enough values
+    with patch("src.circuit_breaker.time.time", side_effect=[700.0 + i * 0.01 for i in range(50)]):
         breaker.execute(lambda: "ok")
         with pytest.raises(RuntimeError):
             breaker.execute(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
@@ -448,7 +479,7 @@ def test_distributed_coordinator__send_registration_posts_json_and_ignores_urler
     assert captured["url"] == "http://coordinator/circuit-breakers/register"
     assert captured["timeout"] == 5
     assert captured["method"] == "POST"
-    assert captured["headers"]["Content-Type"] == "application/json"
+    assert _get_header_case_insensitive(captured["headers"], "Content-Type") == "application/json"
 
     payload = json.loads(captured["data"].decode("utf-8"))
     assert payload["service"] == breaker.name
@@ -542,9 +573,7 @@ def test_distributed_coordinator__sync_loop_ignores_exceptions_in_synchronize(co
     assert calls["sleep"] == 1
 
 
-def test_distributed_coordinator__synchronize_states_posts_state_per_breaker_and_ignores_urlerror(
-    coordinator, breaker
-):
+def test_distributed_coordinator__synchronize_states_posts_state_per_breaker_and_ignores_urlerror(coordinator, breaker):
     """Test _synchronize_states posts breaker state and ignores URLError failures."""
     coordinator._breakers = {breaker.name: breaker}
     captured = {}
@@ -564,7 +593,7 @@ def test_distributed_coordinator__synchronize_states_posts_state_per_breaker_and
     assert captured["url"] == "http://coordinator/circuit-breakers/state"
     assert captured["timeout"] == 5
     assert captured["method"] == "POST"
-    assert captured["headers"]["Content-Type"] == "application/json"
+    assert _get_header_case_insensitive(captured["headers"], "Content-Type") == "application/json"
 
     payload = json.loads(captured["data"].decode("utf-8"))
     assert payload["service"] == breaker.name

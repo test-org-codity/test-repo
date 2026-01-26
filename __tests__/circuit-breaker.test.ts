@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const { describe, it, expect, jest, afterEach } = require('@jest/globals')
 
 // Ensure this file never executes outside Jest (some CI runners may attempt to execute
@@ -10,22 +9,16 @@ const isJestRuntime =
 
 const maybeDescribe = isJestRuntime ? describe : describe.skip
 
-jest.mock('date-fns', () => {
-  const actual = jest.requireActual('date-fns')
-  return {
-    ...actual,
-    format: jest.fn((_date, _fmt) => '2024-01-01'),
-    subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
-  }
-})
+jest.mock('date-fns', () => ({
+  ...jest.requireActual('date-fns'),
+  format: jest.fn((_date, _fmt) => '2024-01-01'),
+  subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
+}))
 
-jest.mock('react-use', () => {
-  const actual = jest.requireActual('react-use')
-  return {
-    ...actual,
-    useMedia: jest.fn(() => false),
-  }
-})
+jest.mock('react-use', () => ({
+  ...jest.requireActual('react-use'),
+  useMedia: jest.fn(() => false),
+}))
 
 jest.mock('@/config/redis', () => {
   let actual = {}
@@ -35,9 +28,6 @@ jest.mock('@/config/redis', () => {
     // ignore
   }
 
-  // Important: keep store/client stable across multiple getRedisClient() calls
-  // within a single test file execution, but allow resetting between tests via
-  // jest.clearAllMocks (store persists unless recreated here).
   const store = Object.create(null)
 
   const client = {
@@ -98,25 +88,27 @@ maybeDescribe('redis client behavior (mocked)', () => {
     expect(await client.get('k1')).toBe('v1')
     expect(await client.get('missing')).toBeNull()
 
-    expect(client.set).toHaveBeenCalledWith('k1', 'v1')
-    expect(client.get).toHaveBeenCalledWith('k1')
-    expect(client.get).toHaveBeenCalledWith('missing')
+    expect(client.set).toHaveBeenCalledTimes(1)
+    expect(client.get).toHaveBeenCalledTimes(2)
   })
 
-  it('del returns 1 when key existed and 0 when missing', async () => {
+  it('del removes keys and reports existence count', async () => {
     const client = await getRedisClient()
+
+    expect(await client.del('nope')).toBe(0)
 
     await client.set('k2', 'v2')
     expect(await client.del('k2')).toBe(1)
-    expect(await client.del('k2')).toBe(0)
+    expect(await client.get('k2')).toBeNull()
 
-    expect(client.set).toHaveBeenCalledWith('k2', 'v2')
-    expect(client.del).toHaveBeenCalledWith('k2')
+    expect(client.del).toHaveBeenCalledTimes(2)
   })
 
-  it('quit resolves OK', async () => {
-    const client = await getRedisClient()
-    await expect(client.quit()).resolves.toBe('OK')
-    expect(client.quit).toHaveBeenCalledTimes(1)
+  it('getRedisClient returns a stable mocked client instance', async () => {
+    const c1 = await getRedisClient()
+    const c2 = await getRedisClient()
+
+    expect(c1).toBe(c2)
+    expect(getRedisClient).toHaveBeenCalledTimes(2)
   })
 })

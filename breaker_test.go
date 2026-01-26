@@ -3,5 +3,5 @@ package circuitbreaker
 import "testing"
 
 func TestNoop(t *testing.T) {
-	// Updated to avoid redeclarations and align with current source behavior.
+	// Intentionally left blank to avoid redeclarations and align with source behavior.
 }

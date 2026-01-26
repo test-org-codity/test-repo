@@ -1,14 +1,24 @@
 jest.mock('date-fns', () => {
-  const actual = jest.requireActual('date-fns')
+  let actual = {}
+  try {
+    actual = jest.requireActual('date-fns')
+  } catch {
+    // ignore if actual cannot be resolved; we only need to provide the mocked API
+  }
   return {
     ...actual,
-    format: jest.fn((_date: Date, _fmt: string) => '2024-01-01'),
-    subMonths: jest.fn((_date: Date, _months: number) => new Date('2024-01-01')),
+    format: jest.fn((_date, _fmt) => '2024-01-01'),
+    subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
   }
 })
 
 jest.mock('react-use', () => {
-  const actual = jest.requireActual('react-use')
+  let actual = {}
+  try {
+    actual = jest.requireActual('react-use')
+  } catch {
+    // ignore if actual cannot be resolved; we only need to provide the mocked API
+  }
   return {
     ...actual,
     useMedia: jest.fn(() => false),
@@ -16,21 +26,21 @@ jest.mock('react-use', () => {
 })
 
 jest.mock('@/config/redis', () => {
-  let actual: any = {}
+  let actual = {}
   try {
     actual = jest.requireActual('@/config/redis')
   } catch {
     // ignore if actual cannot be resolved; we only need to provide the mocked API
   }
-  const store: Record<string, string> = {}
+  const store = {}
   const client = {
-    get: jest.fn(async (key: string) => (key in store ? store[key] : null)),
-    set: jest.fn(async (key: string, value: string) => {
+    get: jest.fn(async (key) => (Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null)),
+    set: jest.fn(async (key, value) => {
       store[key] = value
       return 'OK'
     }),
-    del: jest.fn(async (key: string) => {
-      const existed = key in store ? 1 : 0
+    del: jest.fn(async (key) => {
+      const existed = Object.prototype.hasOwnProperty.call(store, key) ? 1 : 0
       delete store[key]
       return existed
     }),
@@ -42,9 +52,9 @@ jest.mock('@/config/redis', () => {
   }
 })
 
-import { format, subMonths } from 'date-fns'
-import { useMedia } from 'react-use'
-import { getRedisClient } from '@/config/redis'
+const { format, subMonths } = require('date-fns')
+const { useMedia } = require('react-use')
+const { getRedisClient } = require('@/config/redis')
 
 afterEach(() => {
   jest.clearAllMocks()
@@ -54,25 +64,25 @@ describe('external dependency mocks behave deterministically', () => {
   it('date-fns: format returns a fixed string', () => {
     const result = format(new Date('1999-12-31'), 'yyyy-MM-dd')
     expect(result).toBe('2024-01-01')
-    expect((format as any).mock.calls.length).toBeGreaterThan(0)
+    expect(format).toHaveBeenCalled()
   })
 
   it('date-fns: subMonths returns a fixed date', () => {
     const result = subMonths(new Date('2024-02-15'), 1)
     expect(result).toEqual(new Date('2024-01-01'))
-    expect((subMonths as any).mock.calls.length).toBeGreaterThan(0)
+    expect(subMonths).toHaveBeenCalled()
   })
 
   it('react-use: useMedia returns false', () => {
-    const val = (useMedia as unknown as () => boolean)()
+    const val = useMedia()
     expect(val).toBe(false)
-    expect((useMedia as any).mock.calls.length).toBeGreaterThan(0)
+    expect(useMedia).toHaveBeenCalled()
   })
 })
 
 describe('redis client behavior (mocked)', () => {
   it('set/get/del/quit roundtrip works as expected', async () => {
-    const client: any = await getRedisClient()
+    const client = await getRedisClient()
     const key = `cb:test:${Math.random().toString(36).slice(2)}`
     const value = 'some-value'
 

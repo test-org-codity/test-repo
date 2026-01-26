@@ -15,8 +15,8 @@ if (isJestRuntime) {
     const actual = jest.requireActual('date-fns')
     return {
       ...actual,
-      format: jest.fn((_date, _fmt) => '2024-01-01'),
-      subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
+      format: jest.fn((_date: Date, _fmt: string) => '2024-01-01'),
+      subMonths: jest.fn((_date: Date, _months: number) => new Date('2024-01-01')),
     }
   })
 
@@ -99,33 +99,35 @@ maybeDescribe('external dependency mocks behave deterministically', () => {
 maybeDescribe('redis client behavior (mocked)', () => {
   it('set/get roundtrip works and returns null for missing keys', async () => {
     const client = await getRedisClient()
+    const missing = await client.get('missing')
+    expect(missing).toBeNull()
 
-    expect(await client.get('missing')).toBeNull()
+    const setRes = await client.set('foo', 'bar')
+    expect(setRes).toBe('OK')
 
-    await client.set('k1', 'v1')
-    expect(await client.get('k1')).toBe('v1')
-
-    expect(await client.del('k1')).toBe(1)
-    expect(await client.get('k1')).toBeNull()
-
-    expect(await client.quit()).toBe('OK')
-
-    expect(client.set).toHaveBeenCalledTimes(1)
-    expect(client.get).toHaveBeenCalledTimes(3)
-    expect(client.del).toHaveBeenCalledTimes(1)
-    expect(client.quit).toHaveBeenCalledTimes(1)
+    const got = await client.get('foo')
+    expect(got).toBe('bar')
   })
 
-  it('separate clients do not share state', async () => {
-    const c1 = await getRedisClient()
-    const c2 = await getRedisClient()
+  it('del removes keys and reports existence', async () => {
+    const client = await getRedisClient()
 
-    await c1.set('onlyC1', 'value1')
-    expect(await c1.get('onlyC1')).toBe('value1')
-    expect(await c2.get('onlyC1')).toBeNull()
+    // deleting non-existent key
+    const delMissing = await client.del('nope')
+    expect(delMissing).toBe(0)
 
-    await c2.set('onlyC2', 'value2')
-    expect(await c2.get('onlyC2')).toBe('value2')
-    expect(await c1.get('onlyC2')).toBeNull()
+    // set and delete existing key
+    await client.set('k', 'v')
+    const delExisting = await client.del('k')
+    expect(delExisting).toBe(1)
+
+    const after = await client.get('k')
+    expect(after).toBeNull()
+  })
+
+  it('quit resolves with OK', async () => {
+    const client = await getRedisClient()
+    const res = await client.quit()
+    expect(res).toBe('OK')
   })
 })

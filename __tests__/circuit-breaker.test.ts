@@ -1,4 +1,4 @@
-const { describe, it, expect, jest, afterEach } = require('@jest/globals')
+const { describe, it, expect, jest, afterEach, beforeEach } = require('@jest/globals')
 
 // Ensure this file never executes outside Jest (some CI runners may attempt to execute
 // test files with non-jest tooling and choke on jest.mock / ESM interop).
@@ -9,16 +9,22 @@ const isJestRuntime =
 
 const maybeDescribe = isJestRuntime ? describe : describe.skip
 
-jest.mock('date-fns', () => ({
-  ...jest.requireActual('date-fns'),
-  format: jest.fn((_date, _fmt) => '2024-01-01'),
-  subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
-}))
+jest.mock('date-fns', () => {
+  const actual = jest.requireActual('date-fns')
+  return {
+    ...actual,
+    format: jest.fn((_date, _fmt) => '2024-01-01'),
+    subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
+  }
+})
 
-jest.mock('react-use', () => ({
-  ...jest.requireActual('react-use'),
-  useMedia: jest.fn(() => false),
-}))
+jest.mock('react-use', () => {
+  const actual = jest.requireActual('react-use')
+  return {
+    ...actual,
+    useMedia: jest.fn(() => false),
+  }
+})
 
 jest.mock('@/config/redis', () => {
   let actual = {}
@@ -28,27 +34,29 @@ jest.mock('@/config/redis', () => {
     // ignore
   }
 
-  const store = Object.create(null)
-
-  const client = {
-    get: jest.fn(async (key) =>
-      Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null,
-    ),
-    set: jest.fn(async (key, value) => {
-      store[key] = value
-      return 'OK'
-    }),
-    del: jest.fn(async (key) => {
-      const existed = Object.prototype.hasOwnProperty.call(store, key) ? 1 : 0
-      delete store[key]
-      return existed
-    }),
-    quit: jest.fn(async () => 'OK'),
+  const createClient = () => {
+    const store = Object.create(null)
+    return {
+      get: jest.fn(async (key) =>
+        Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null,
+      ),
+      set: jest.fn(async (key, value) => {
+        store[key] = value
+        return 'OK'
+      }),
+      del: jest.fn(async (key) => {
+        const existed = Object.prototype.hasOwnProperty.call(store, key) ? 1 : 0
+        delete store[key]
+        return existed
+      }),
+      quit: jest.fn(async () => 'OK'),
+      __store: store,
+    }
   }
 
   return {
     ...actual,
-    getRedisClient: jest.fn().mockResolvedValue(client),
+    getRedisClient: jest.fn(async () => createClient()),
   }
 })
 
@@ -107,5 +115,14 @@ maybeDescribe('redis client behavior (mocked)', () => {
     const client = await getRedisClient()
     await expect(client.quit()).resolves.toBe('OK')
     expect(client.quit).toHaveBeenCalledTimes(1)
+  })
+
+  it('different clients do not share state', async () => {
+    const c1 = await getRedisClient()
+    const c2 = await getRedisClient()
+
+    await c1.set('shared', 'nope')
+    expect(await c1.get('shared')).toBe('nope')
+    expect(await c2.get('shared')).toBeNull()
   })
 })

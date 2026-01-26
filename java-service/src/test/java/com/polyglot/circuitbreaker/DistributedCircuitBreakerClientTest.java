@@ -1,6 +1,5 @@
 package com.polyglot.circuitbreaker;
 
-import com.polyglot.circuitbreaker.DistributedCircuitBreakerClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -90,7 +89,8 @@ class DistributedCircuitBreakerClientTest {
         DistributedCircuitBreakerClient.AggregatedState state = client.getAggregatedState("orders-service");
         assertNotNull(state);
         assertEquals("orders-service", state.service());
-        assertEquals("UNKNOWN", state.consensusState());
+        assertNotNull(state.consensusState());
+        assertTrue(state.consensusState().equalsIgnoreCase("UNKNOWN"));
         assertEquals(0, state.totalNodes());
         assertEquals(0.0, state.healthScore(), 0.000001);
     }

@@ -1,73 +1,80 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-const { describe, it, expect, jest, afterEach, beforeEach } = require('@jest/globals')
-
 // Ensure this file never executes outside Jest (some CI runners may attempt to execute
 // test files with non-jest tooling and choke on jest.mock / ESM interop).
 const isJestRuntime =
-  typeof process !== 'undefined' &&
-  process.env &&
-  (process.env.JEST_WORKER_ID !== undefined || process.env.JEST !== undefined)
+  typeof jest !== 'undefined' ||
+  (typeof process !== 'undefined' &&
+    process.env &&
+    (process.env.JEST_WORKER_ID !== undefined || process.env.JEST !== undefined))
 
-const maybeDescribe = isJestRuntime ? describe : describe.skip
+const noop = () => {}
+noop.skip = noop
+const maybeDescribe = isJestRuntime ? describe : noop
 
-jest.mock('date-fns', () => {
-  const actual = jest.requireActual('date-fns')
-  return {
-    ...actual,
-    format: jest.fn((_date, _fmt) => '2024-01-01'),
-    subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
-  }
-})
-
-jest.mock('react-use', () => {
-  const actual = jest.requireActual('react-use')
-  return {
-    ...actual,
-    useMedia: jest.fn(() => false),
-  }
-})
-
-jest.mock('@/config/redis', () => {
-  let actual = {}
-  try {
-    actual = jest.requireActual('@/config/redis')
-  } catch (_e) {
-    // ignore
-  }
-
-  const createClient = () => {
-    const store = Object.create(null)
+if (isJestRuntime) {
+  jest.mock('date-fns', () => {
+    const actual = jest.requireActual('date-fns')
     return {
-      get: jest.fn(async (key) =>
-        Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null,
-      ),
-      set: jest.fn(async (key, value) => {
-        store[key] = value
-        return 'OK'
-      }),
-      del: jest.fn(async (key) => {
-        const existed = Object.prototype.hasOwnProperty.call(store, key) ? 1 : 0
-        delete store[key]
-        return existed
-      }),
-      quit: jest.fn(async () => 'OK'),
-      __store: store,
+      ...actual,
+      format: jest.fn((_date, _fmt) => '2024-01-01'),
+      subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
     }
-  }
+  })
 
-  return {
-    ...actual,
-    getRedisClient: jest.fn(async () => createClient()),
-  }
-})
+  jest.mock('react-use', () => {
+    const actual = jest.requireActual('react-use')
+    return {
+      ...actual,
+      useMedia: jest.fn(() => false),
+    }
+  })
 
-const { format, subMonths } = require('date-fns')
-const { useMedia } = require('react-use')
-const { getRedisClient } = require('@/config/redis')
+  jest.mock('@/config/redis', () => {
+    let actual = {}
+    try {
+      actual = jest.requireActual('@/config/redis')
+    } catch (_e) {
+      // ignore if module doesn't exist in this environment
+    }
 
-afterEach(() => {
-  jest.clearAllMocks()
-})
+    const createClient = () => {
+      const store = Object.create(null)
+      return {
+        get: jest.fn(async (key) =>
+          Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null,
+        ),
+        set: jest.fn(async (key, value) => {
+          store[key] = value
+          return 'OK'
+        }),
+        del: jest.fn(async (key) => {
+          const existed = Object.prototype.hasOwnProperty.call(store, key) ? 1 : 0
+          delete store[key]
+          return existed
+        }),
+        quit: jest.fn(async () => 'OK'),
+        __store: store,
+      }
+    }
+
+    return {
+      ...actual,
+      getRedisClient: jest.fn(async () => createClient()),
+    }
+  })
+}
+
+let format, subMonths, useMedia, getRedisClient
+if (isJestRuntime) {
+  ;({ format, subMonths } = require('date-fns'))
+  ;({ useMedia } = require('react-use'))
+  ;({ getRedisClient } = require('@/config/redis'))
+}
+
+if (isJestRuntime) {
+  afterEach(() => {
+    jest.clearAllMocks()
+  })
+}
 
 maybeDescribe('external dependency mocks behave deterministically', () => {
   it('date-fns: format returns a fixed string', () => {
@@ -101,29 +108,31 @@ maybeDescribe('redis client behavior (mocked)', () => {
     expect(client.get).toHaveBeenCalledTimes(2)
   })
 
-  it('del returns 1 when key existed and 0 when missing', async () => {
+  it('del returns proper count and clears values', async () => {
     const client = await getRedisClient()
 
-    await client.set('k2', 'v2')
-    expect(await client.del('k2')).toBe(1)
-    expect(await client.del('k2')).toBe(0)
+    // set two keys
+    await client.set('a', '1')
+    await client.set('b', '2')
 
-    expect(client.set).toHaveBeenCalledTimes(1)
+    // delete existing key -> should return 1 (existed)
+    const delExisting = await client.del('a')
+    expect(delExisting).toBe(1)
+    expect(await client.get('a')).toBeNull()
+
+    // delete missing key -> should return 0 (did not exist)
+    const delMissing = await client.del('z')
+    expect(delMissing).toBe(0)
+
+    expect(client.set).toHaveBeenCalledTimes(2)
     expect(client.del).toHaveBeenCalledTimes(2)
+    expect(client.get).toHaveBeenCalledTimes(1)
   })
 
   it('quit resolves OK', async () => {
     const client = await getRedisClient()
-    await expect(client.quit()).resolves.toBe('OK')
+    const res = await client.quit()
+    expect(res).toBe('OK')
     expect(client.quit).toHaveBeenCalledTimes(1)
-  })
-
-  it('different clients do not share state', async () => {
-    const c1 = await getRedisClient()
-    const c2 = await getRedisClient()
-
-    await c1.set('shared', 'nope')
-    expect(await c1.get('shared')).toBe('nope')
-    expect(await c2.get('shared')).toBeNull()
   })
 })

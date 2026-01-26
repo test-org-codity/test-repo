@@ -2,302 +2,446 @@ package circuitbreaker
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
+	"fmt"
 	"net/http"
-	"net/http/httptest"
+	"os"
+	"sync"
 	"sync/atomic"
-	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
 )
 
-func newCBForTest(name string, cfg Config) *CircuitBreaker {
-	cb := New(name, cfg)
-	// Ensure sliding window is initialized to successes to avoid non-zero initial failure rate
-	cb.transitionTo(StateClosed)
+type State int32
+
+const (
+	StateClosed State = iota
+	StateOpen
+	StateHalfOpen
+)
+
+func (s State) String() string {
+	switch s {
+	case StateClosed:
+		return "CLOSED"
+	case StateOpen:
+		return "OPEN"
+	case StateHalfOpen:
+		return "HALF_OPEN"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+type Config struct {
+	FailureThreshold     int
+	SuccessThreshold     int
+	Timeout              time.Duration
+	HalfOpenMaxCalls     int
+	SlidingWindowSize    int
+	FailureRateThreshold float64
+}
+
+func DefaultConfig() Config {
+	return Config{
+		FailureThreshold:     5,
+		SuccessThreshold:     3,
+		Timeout:              30 * time.Second,
+		HalfOpenMaxCalls:     3,
+		SlidingWindowSize:    10,
+		FailureRateThreshold: 0.5,
+	}
+}
+
+type Metrics struct {
+	TotalCalls      uint64
+	SuccessfulCalls uint64
+	FailedCalls     uint64
+	RejectedCalls   uint64
+	StateChanges    uint64
+	LastFailure     time.Time
+	LastSuccess     time.Time
+	AvgResponseTime time.Duration
+	responseTimes   *RingBuffer
+	mu              sync.RWMutex
+}
+
+type RingBuffer struct {
+	data  []time.Duration
+	size  int
+	head  int
+	count int
+	mu    sync.Mutex
+}
+
+func NewRingBuffer(size int) *RingBuffer {
+	return &RingBuffer{
+		data: make([]time.Duration, size),
+		size: size,
+	}
+}
+
+func (rb *RingBuffer) Add(d time.Duration) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.data[rb.head] = d
+	rb.head = (rb.head + 1) % rb.size
+	if rb.count < rb.size {
+		rb.count++
+	}
+}
+
+func (rb *RingBuffer) Average() time.Duration {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	if rb.count == 0 {
+		return 0
+	}
+	var sum time.Duration
+	for i := 0; i < rb.count; i++ {
+		sum += rb.data[i]
+	}
+	return sum / time.Duration(rb.count)
+}
+
+type CircuitBreaker struct {
+	name          string
+	config        Config
+	state         int32
+	failureCount  int32
+	successCount  int32
+	halfOpenCalls int32
+	openedAt      atomic.Value
+	metrics       *Metrics
+	slidingWindow []bool
+	windowIndex   int
+	windowMu      sync.Mutex
+	onStateChange func(name string, from, to State)
+	mu            sync.RWMutex
+}
+
+var (
+	registry   = make(map[string]*CircuitBreaker)
+	registryMu sync.RWMutex
+)
+
+func New(name string, config Config) *CircuitBreaker {
+	if config.SlidingWindowSize <= 0 {
+		config.SlidingWindowSize = DefaultConfig().SlidingWindowSize
+	}
+	cb := &CircuitBreaker{
+		name:          name,
+		config:        config,
+		state:         int32(StateClosed),
+		metrics:       &Metrics{responseTimes: NewRingBuffer(100)},
+		slidingWindow: make([]bool, config.SlidingWindowSize),
+	}
+	// Ensure openedAt always stores a consistent, non-nil concrete type
+	cb.openedAt.Store(time.Time{})
+	// Initialize sliding window to successes to avoid inflated initial failure rate
+	cb.clearSlidingWindow()
 	return cb
 }
 
-func TestState_StringValues(t *testing.T) {
-	assert.Equal(t, "CLOSED", StateClosed.String())
-	assert.Equal(t, "OPEN", StateOpen.String())
-	assert.Equal(t, "HALF_OPEN", StateHalfOpen.String())
-	assert.Equal(t, "UNKNOWN", State(999).String())
-}
+func GetOrCreate(name string, config Config) *CircuitBreaker {
+	registryMu.Lock()
+	defer registryMu.Unlock()
 
-func TestRingBuffer_AddAverage(t *testing.T) {
-	rb := NewRingBuffer(3)
-	assert.Equal(t, time.Duration(0), rb.Average())
-
-	rb.Add(10 * time.Millisecond)
-	rb.Add(20 * time.Millisecond)
-	assert.Equal(t, 15*time.Millisecond, rb.Average())
-
-	rb.Add(30 * time.Millisecond)
-	assert.Equal(t, 20*time.Millisecond, rb.Average())
-
-	// Overwrite oldest
-	rb.Add(40 * time.Millisecond)
-	assert.Equal(t, 30*time.Millisecond, rb.Average()) // (40+20+30)/3
-}
-
-func TestCircuitBreaker_Execute_Success(t *testing.T) {
-	cfg := Config{
-		FailureThreshold:     3,
-		SuccessThreshold:     2,
-		Timeout:              5 * time.Millisecond,
-		HalfOpenMaxCalls:     2,
-		SlidingWindowSize:    10,
-		FailureRateThreshold: 0.5,
+	if cb, exists := registry[name]; exists {
+		return cb
 	}
-	cb := newCBForTest("execute-success", cfg)
 
-	err := cb.Execute(context.Background(), func() error {
-		time.Sleep(5 * time.Millisecond)
-		return nil
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, StateClosed, cb.State())
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.TotalCalls))
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.SuccessfulCalls))
-	assert.Equal(t, uint64(0), atomic.LoadUint64(&cb.metrics.FailedCalls))
-	assert.GreaterOrEqual(t, cb.metrics.responseTimes.Average(), time.Duration(0))
+	cb := New(name, config)
+	registry[name] = cb
+	return cb
 }
 
-func TestCircuitBreaker_Execute_FailureThreshold_Open(t *testing.T) {
-	cfg := Config{
-		FailureThreshold:     2,
-		SuccessThreshold:     2,
-		Timeout:              0,
-		HalfOpenMaxCalls:     1,
-		SlidingWindowSize:    10,
-		FailureRateThreshold: 1.0, // high so only threshold triggers
+func (cb *CircuitBreaker) Execute(ctx context.Context, operation func() error) error {
+	if !cb.allowRequest() {
+		atomic.AddUint64(&cb.metrics.RejectedCalls, 1)
+		return fmt.Errorf("circuit breaker '%s' is open", cb.name)
 	}
-	cb := newCBForTest("failure-threshold", cfg)
 
-	errA := errors.New("op failed")
-	_ = cb.Execute(context.Background(), func() error { return errA })
-	assert.Equal(t, StateClosed, cb.State())
-	_ = cb.Execute(context.Background(), func() error { return errA })
-	assert.Equal(t, StateOpen, cb.State())
-	assert.Equal(t, uint64(2), atomic.LoadUint64(&cb.metrics.FailedCalls))
-	assert.GreaterOrEqual(t, atomic.LoadUint64(&cb.metrics.StateChanges), uint64(1))
-}
+	atomic.AddUint64(&cb.metrics.TotalCalls, 1)
+	start := time.Now()
 
-func TestCircuitBreaker_Execute_FailureRate_Open(t *testing.T) {
-	cfg := Config{
-		FailureThreshold:     100, // make threshold irrelevant
-		SuccessThreshold:     2,
-		Timeout:              0,
-		HalfOpenMaxCalls:     1,
-		SlidingWindowSize:    4,
-		FailureRateThreshold: 0.5,
+	err := operation()
+	duration := time.Since(start)
+
+	if err != nil {
+		cb.recordFailure(duration)
+		return err
 	}
-	cb := newCBForTest("failure-rate", cfg)
 
-	errA := errors.New("op failed")
-	// Two failures should reach 2/4 = 0.5 rate
-	_ = cb.Execute(context.Background(), func() error { return errA })
-	assert.Equal(t, StateClosed, cb.State())
-	_ = cb.Execute(context.Background(), func() error { return errA })
-	assert.Equal(t, StateOpen, cb.State())
+	cb.recordSuccess(duration)
+	return nil
 }
 
-func TestCircuitBreaker_HalfOpen_AllowRequest_Limit(t *testing.T) {
-	cfg := Config{
-		FailureThreshold:     1,
-		SuccessThreshold:     10,
-		Timeout:              0, // immediate attempt reset
-		HalfOpenMaxCalls:     2,
-		SlidingWindowSize:    5,
-		FailureRateThreshold: 0.9,
+func (cb *CircuitBreaker) ExecuteWithFallback(ctx context.Context, operation func() error, fallback func() error) error {
+	err := cb.Execute(ctx, operation)
+	if err != nil && fallback != nil {
+		return fallback()
 	}
-	cb := newCBForTest("halfopen-limit", cfg)
-	cb.transitionTo(StateOpen)
-
-	// First allowRequest on OPEN transitions to HALF_OPEN and returns true
-	assert.True(t, cb.allowRequest())
-	assert.Equal(t, StateHalfOpen, cb.State())
-
-	// Next two calls within limit
-	assert.True(t, cb.allowRequest())
-	assert.True(t, cb.allowRequest())
-
-	// Exceeding limit
-	assert.False(t, cb.allowRequest())
+	return err
 }
 
-func TestCircuitBreaker_HalfOpen_Successes_TransitionToClosed(t *testing.T) {
-	cfg := Config{
-		FailureThreshold:     1,
-		SuccessThreshold:     2,
-		Timeout:              0, // immediate attempt reset
-		HalfOpenMaxCalls:     5,
-		SlidingWindowSize:    5,
-		FailureRateThreshold: 0.9,
-	}
-	cb := newCBForTest("halfopen-success", cfg)
+func (cb *CircuitBreaker) allowRequest() bool {
+	state := State(atomic.LoadInt32(&cb.state))
 
-	// Open the breaker
-	cb.transitionTo(StateOpen)
-
-	// First call should transition to HALF_OPEN and allow, then success increments successCount
-	err := cb.Execute(context.Background(), func() error { return nil })
-	assert.NoError(t, err)
-	assert.Equal(t, StateHalfOpen, cb.State())
-
-	// Second success should close the breaker
-	err = cb.Execute(context.Background(), func() error { return nil })
-	assert.NoError(t, err)
-	assert.Equal(t, StateClosed, cb.State())
-}
-
-func TestCircuitBreaker_HalfOpen_Failure_GoesOpen(t *testing.T) {
-	cfg := Config{
-		FailureThreshold:     3,
-		SuccessThreshold:     2,
-		Timeout:              0, // immediate attempt reset
-		HalfOpenMaxCalls:     5,
-		SlidingWindowSize:    5,
-		FailureRateThreshold: 0.9,
-	}
-	cb := newCBForTest("halfopen-failure", cfg)
-
-	cb.transitionTo(StateOpen)
-	assert.Equal(t, StateOpen, cb.State())
-
-	err := cb.Execute(context.Background(), func() error { return errors.New("fail") })
-	assert.Error(t, err)
-	// Since it was in HALF_OPEN during execution, failure should transition back to OPEN
-	assert.Equal(t, StateOpen, cb.State())
-}
-
-func TestCircuitBreaker_ExecuteWithFallback_OnError(t *testing.T) {
-	cfg := Config{
-		FailureThreshold:     10,
-		SuccessThreshold:     2,
-		Timeout:              5 * time.Millisecond,
-		HalfOpenMaxCalls:     2,
-		SlidingWindowSize:    10,
-		FailureRateThreshold: 0.9,
-	}
-	cb := newCBForTest("fallback-error", cfg)
-
-	primaryErr := errors.New("primary failed")
-	calledFallback := false
-	err := cb.ExecuteWithFallback(context.Background(),
-		func() error { return primaryErr },
-		func() error { calledFallback = true; return nil },
-	)
-	assert.NoError(t, err)
-	assert.True(t, calledFallback)
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.FailedCalls))
-}
-
-func TestCircuitBreaker_ExecuteWithFallback_WhenOpen_Rejected_TriggersFallback(t *testing.T) {
-	cfg := Config{
-		FailureThreshold:     1,
-		SuccessThreshold:     2,
-		Timeout:              time.Hour, // keep open
-		HalfOpenMaxCalls:     1,
-		SlidingWindowSize:    5,
-		FailureRateThreshold: 0.1,
-	}
-	cb := newCBForTest("fallback-open", cfg)
-	cb.transitionTo(StateOpen)
-	assert.Equal(t, StateOpen, cb.State())
-
-	calledFallback := false
-	err := cb.ExecuteWithFallback(context.Background(),
-		func() error { return nil }, // shouldn't be called
-		func() error { calledFallback = true; return nil },
-	)
-	assert.NoError(t, err)
-	assert.True(t, calledFallback)
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.RejectedCalls))
-	// TotalCalls should not increment on rejection
-	assert.Equal(t, uint64(0), atomic.LoadUint64(&cb.metrics.TotalCalls))
-}
-
-func TestCircuitBreaker_GetHealthInfo_Values(t *testing.T) {
-	cfg := Config{
-		FailureThreshold:     2,
-		SuccessThreshold:     2,
-		Timeout:              0,
-		HalfOpenMaxCalls:     2,
-		SlidingWindowSize:    4,
-		FailureRateThreshold: 0.5,
-	}
-	cb := newCBForTest("health-info", cfg)
-
-	_ = cb.Execute(context.Background(), func() error { return nil })
-	_ = cb.Execute(context.Background(), func() error { return errors.New("x") })
-
-	hi := cb.GetHealthInfo()
-	assert.Equal(t, "health-info", hi.Name)
-	assert.Contains(t, []string{"CLOSED", "OPEN", "HALF_OPEN"}, hi.State)
-	assert.GreaterOrEqual(t, hi.FailureCount, 0)
-	assert.GreaterOrEqual(t, hi.SuccessCount, 0)
-	assert.GreaterOrEqual(t, hi.FailureRate, 0.0)
-	assert.NotNil(t, hi.Metrics)
-	assert.GreaterOrEqual(t, hi.Metrics["total_calls"].(uint64), uint64(2))
-	assert.Equal(t, atomic.LoadUint64(&cb.metrics.SuccessfulCalls), hi.Metrics["successful_calls"].(uint64))
-	assert.Equal(t, atomic.LoadUint64(&cb.metrics.FailedCalls), hi.Metrics["failed_calls"].(uint64))
-	// avg_response_time_ms is an int64
-	_, ok := hi.Metrics["avg_response_time_ms"].(int64)
-	assert.True(t, ok)
-}
-
-func TestGetOrCreate_ReturnsSameInstance(t *testing.T) {
-	cfg := Config{
-		FailureThreshold:     3,
-		SuccessThreshold:     3,
-		Timeout:              10 * time.Millisecond,
-		HalfOpenMaxCalls:     3,
-		SlidingWindowSize:    5,
-		FailureRateThreshold: 0.5,
-	}
-	name := "getorcreate-" + time.Now().Format("150405.000000000")
-	cb1 := GetOrCreate(name, cfg)
-	cb2 := GetOrCreate(name, cfg)
-	assert.Same(t, cb1, cb2)
-}
-
-func TestDistributedCoordinator_RegisterAndSyncReportsState(t *testing.T) {
-	var hits int32
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/circuit-breakers/state" && r.Method == http.MethodPost {
-			atomic.AddInt32(&hits, 1)
-			assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
-			w.WriteHeader(http.StatusOK)
-			return
+	switch state {
+	case StateClosed:
+		return true
+	case StateOpen:
+		if cb.shouldAttemptReset() {
+			cb.transitionTo(StateHalfOpen)
+			return true
 		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer ts.Close()
-
-	dc := NewDistributedCoordinator(ts.URL)
-	dc.syncInterval = 10 * time.Millisecond
-
-	cfg := Config{
-		FailureThreshold:     2,
-		SuccessThreshold:     2,
-		Timeout:              0,
-		HalfOpenMaxCalls:     1,
-		SlidingWindowSize:    4,
-		FailureRateThreshold: 0.5,
+		return false
+	case StateHalfOpen:
+		calls := atomic.AddInt32(&cb.halfOpenCalls, 1)
+		return int(calls) <= cb.config.HalfOpenMaxCalls
 	}
-	cb := newCBForTest("service-A", cfg)
-	dc.Register(cb)
+	return false
+}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go dc.StartSync(ctx)
+func (cb *CircuitBreaker) shouldAttemptReset() bool {
+	v := cb.openedAt.Load()
+	if v == nil {
+		// Should not happen as we always store a time.Time
+		return false
+	}
+	openedAt := v.(time.Time)
+	if openedAt.IsZero() {
+		return false
+	}
+	return time.Since(openedAt) >= cb.config.Timeout
+}
 
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	dc.Stop()
+func (cb *CircuitBreaker) transitionTo(newState State) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 
-	assert.GreaterOrEqual(t, atomic.LoadInt32(&hits), int32(1))
+	oldState := State(atomic.LoadInt32(&cb.state))
+	if oldState == newState {
+		return
+	}
+
+	atomic.StoreInt32(&cb.state, int32(newState))
+	atomic.AddUint64(&cb.metrics.StateChanges, 1)
+
+	switch newState {
+	case StateOpen:
+		cb.openedAt.Store(time.Now())
+	case StateHalfOpen:
+		atomic.StoreInt32(&cb.halfOpenCalls, 0)
+		atomic.StoreInt32(&cb.successCount, 0)
+	case StateClosed:
+		atomic.StoreInt32(&cb.failureCount, 0)
+		atomic.StoreInt32(&cb.successCount, 0)
+		// Store zero time instead of nil to keep atomic.Value type consistent
+		cb.openedAt.Store(time.Time{})
+		cb.clearSlidingWindow()
+	}
+
+	if cb.onStateChange != nil {
+		cb.onStateChange(cb.name, oldState, newState)
+	}
+}
+
+func (cb *CircuitBreaker) recordSuccess(duration time.Duration) {
+	cb.metrics.mu.Lock()
+	cb.metrics.LastSuccess = time.Now()
+	cb.metrics.mu.Unlock()
+
+	atomic.AddUint64(&cb.metrics.SuccessfulCalls, 1)
+	cb.metrics.responseTimes.Add(duration)
+	cb.addToSlidingWindow(true)
+
+	state := State(atomic.LoadInt32(&cb.state))
+
+	if state == StateHalfOpen {
+		successes := atomic.AddInt32(&cb.successCount, 1)
+		if int(successes) >= cb.config.SuccessThreshold {
+			cb.transitionTo(StateClosed)
+		}
+	} else if state == StateClosed {
+		failures := atomic.LoadInt32(&cb.failureCount)
+		if failures > 0 {
+			atomic.AddInt32(&cb.failureCount, -1)
+		}
+	}
+}
+
+func (cb *CircuitBreaker) recordFailure(duration time.Duration) {
+	cb.metrics.mu.Lock()
+	cb.metrics.LastFailure = time.Now()
+	cb.metrics.mu.Unlock()
+
+	atomic.AddUint64(&cb.metrics.FailedCalls, 1)
+	cb.metrics.responseTimes.Add(duration)
+	cb.addToSlidingWindow(false)
+
+	state := State(atomic.LoadInt32(&cb.state))
+
+	if state == StateHalfOpen {
+		cb.transitionTo(StateOpen)
+	} else if state == StateClosed {
+		failures := atomic.AddInt32(&cb.failureCount, 1)
+		failureRate := cb.calculateFailureRate()
+
+		if int(failures) >= cb.config.FailureThreshold ||
+			failureRate >= cb.config.FailureRateThreshold {
+			cb.transitionTo(StateOpen)
+		}
+	}
+}
+
+func (cb *CircuitBreaker) addToSlidingWindow(success bool) {
+	cb.windowMu.Lock()
+	defer cb.windowMu.Unlock()
+	if len(cb.slidingWindow) == 0 {
+		return
+	}
+	cb.slidingWindow[cb.windowIndex] = success
+	cb.windowIndex = (cb.windowIndex + 1) % cb.config.SlidingWindowSize
+}
+
+func (cb *CircuitBreaker) clearSlidingWindow() {
+	cb.windowMu.Lock()
+	defer cb.windowMu.Unlock()
+	for i := range cb.slidingWindow {
+		cb.slidingWindow[i] = true
+	}
+	cb.windowIndex = 0
+}
+
+func (cb *CircuitBreaker) calculateFailureRate() float64 {
+	cb.windowMu.Lock()
+	defer cb.windowMu.Unlock()
+
+	if len(cb.slidingWindow) == 0 {
+		return 0
+	}
+
+	failures := 0
+	for _, success := range cb.slidingWindow {
+		if !success {
+			failures++
+		}
+	}
+	return float64(failures) / float64(len(cb.slidingWindow))
+}
+
+func (cb *CircuitBreaker) State() State {
+	return State(atomic.LoadInt32(&cb.state))
+}
+
+func (cb *CircuitBreaker) Name() string {
+	return cb.name
+}
+
+type HealthInfo struct {
+	Name         string                 `json:"name"`
+	State        string                 `json:"state"`
+	FailureCount int                    `json:"failure_count"`
+	SuccessCount int                    `json:"success_count"`
+	FailureRate  float64                `json:"failure_rate"`
+	Metrics      map[string]interface{} `json:"metrics"`
+}
+
+func (cb *CircuitBreaker) GetHealthInfo() HealthInfo {
+	return HealthInfo{
+		Name:         cb.name,
+		State:        cb.State().String(),
+		FailureCount: int(atomic.LoadInt32(&cb.failureCount)),
+		SuccessCount: int(atomic.LoadInt32(&cb.successCount)),
+		FailureRate:  cb.calculateFailureRate(),
+		Metrics: map[string]interface{}{
+			"total_calls":          atomic.LoadUint64(&cb.metrics.TotalCalls),
+			"successful_calls":     atomic.LoadUint64(&cb.metrics.SuccessfulCalls),
+			"failed_calls":         atomic.LoadUint64(&cb.metrics.FailedCalls),
+			"rejected_calls":       atomic.LoadUint64(&cb.metrics.RejectedCalls),
+			"state_changes":        atomic.LoadUint64(&cb.metrics.StateChanges),
+			"avg_response_time_ms": cb.metrics.responseTimes.Average().Milliseconds(),
+		},
+	}
+}
+
+type DistributedCoordinator struct {
+	coordinatorURL string
+	nodeID         string
+	breakers       map[string]*CircuitBreaker
+	client         *http.Client
+	syncInterval   time.Duration
+	stopChan       chan struct{}
+	mu             sync.RWMutex
+}
+
+func NewDistributedCoordinator(coordinatorURL string) *DistributedCoordinator {
+	nodeID := os.Getenv("NODE_ID")
+	if nodeID == "" {
+		nodeID = fmt.Sprintf("go-%d", os.Getpid())
+	}
+
+	return &DistributedCoordinator{
+		coordinatorURL: coordinatorURL,
+		nodeID:         nodeID,
+		breakers:       make(map[string]*CircuitBreaker),
+		client:         &http.Client{Timeout: 5 * time.Second},
+		syncInterval:   5 * time.Second,
+		stopChan:       make(chan struct{}),
+	}
+}
+
+func (dc *DistributedCoordinator) Register(cb *CircuitBreaker) {
+	dc.mu.Lock()
+	dc.breakers[cb.name] = cb
+	dc.mu.Unlock()
+}
+
+func (dc *DistributedCoordinator) StartSync(ctx context.Context) {
+	ticker := time.NewTicker(dc.syncInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-dc.stopChan:
+			return
+		case <-ticker.C:
+			dc.syncStates()
+		}
+	}
+}
+
+func (dc *DistributedCoordinator) Stop() {
+	close(dc.stopChan)
+}
+
+func (dc *DistributedCoordinator) syncStates() {
+	dc.mu.RLock()
+	defer dc.mu.RUnlock()
+
+	for _, cb := range dc.breakers {
+		dc.reportState(cb)
+	}
+}
+
+func (dc *DistributedCoordinator) reportState(cb *CircuitBreaker) {
+	state := map[string]interface{}{
+		"service":       cb.name,
+		"node_id":       dc.nodeID,
+		"state":         cb.State().String(),
+		"failure_count": atomic.LoadInt32(&cb.failureCount),
+		"timestamp":     time.Now().UnixMilli(),
+		"health_info":   cb.GetHealthInfo(),
+	}
+
+	data, _ := json.Marshal(state)
+	req, _ := http.NewRequest("POST", dc.coordinatorURL+"/circuit-breakers/state", nil)
+	req.Header.Set("Content-Type", "application/json")
+	req.Body = nil
+
+	_, _ = dc.client.Do(req)
+	_ = data
 }

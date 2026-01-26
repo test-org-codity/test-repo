@@ -26,7 +26,7 @@ if (isJestRuntime) {
     return {
       ...actual,
       format: jest.fn((_date: Date, _fmt: string) => '2024-01-01'),
-      subMonths: jest.fn((_date: Date, _months: number) => new Date('2024-01-01')),
+      subMonths: jest.fn((_date: Date, _months: number) => new Date('2024-01-01T00:00:00.000Z')),
     }
   })
 
@@ -86,7 +86,9 @@ if (isJestRuntime) {
 
 if (isJestRuntime && typeof afterEach === 'function') {
   afterEach(() => {
-    jest.clearAllMocks()
+    if (typeof jest !== 'undefined' && typeof jest.clearAllMocks === 'function') {
+      jest.clearAllMocks()
+    }
   })
 }
 
@@ -98,42 +100,44 @@ maybeDescribe('external dependency mocks behave deterministically', () => {
   })
 
   it('date-fns: subMonths returns a fixed date', () => {
-    const result = subMonths(new Date('2024-02-15T00:00:00.000Z'), 1)
+    const input = new Date('2024-02-15T00:00:00.000Z')
+    const result = subMonths(input, 3)
     expect(result instanceof Date).toBe(true)
     expect(result.toISOString()).toBe('2024-01-01T00:00:00.000Z')
     expect(subMonths).toHaveBeenCalledTimes(1)
   })
 
   it('react-use: useMedia returns false', () => {
-    const val = useMedia('(min-width: 1024px)', false)
-    expect(val).toBe(false)
+    const result = useMedia('(min-width: 768px)')
+    expect(result).toBe(false)
     expect(useMedia).toHaveBeenCalledTimes(1)
   })
-})
 
-maybeDescribe('redis mock provides in-memory behavior', () => {
-  it('get/set/del/quit roundtrip', async () => {
+  it('redis mock: basic get/set/del/quit behavior', async () => {
     const client = await getRedisClient()
+    expect(typeof client.get).toBe('function')
+    expect(await client.get('missing')).toBeNull()
 
-    const initial = await client.get('key')
-    expect(initial).toBeNull()
-
-    const setRes = await client.set('key', 'value')
+    const setRes = await client.set('foo', 'bar')
     expect(setRes).toBe('OK')
+    expect(await client.get('foo')).toBe('bar')
 
-    const fetched = await client.get('key')
-    expect(fetched).toBe('value')
-
-    const delCount = await client.del('key')
-    expect(delCount).toBe(1)
-
-    const afterDelete = await client.get('key')
-    expect(afterDelete).toBeNull()
-
-    const delMissing = await client.del('missing')
-    expect(delMissing).toBe(0)
+    const delRes = await client.del('foo')
+    expect(delRes).toBe(1)
+    expect(await client.get('foo')).toBeNull()
 
     const quitRes = await client.quit()
     expect(quitRes).toBe('OK')
+  })
+
+  it('redis mock: separate keys persist within the same client instance', async () => {
+    const client = await getRedisClient()
+    await client.set('a', '1')
+    await client.set('b', '2')
+    expect(await client.get('a')).toBe('1')
+    expect(await client.get('b')).toBe('2')
+    await client.del('a')
+    expect(await client.get('a')).toBeNull()
+    expect(await client.get('b')).toBe('2')
   })
 })

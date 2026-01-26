@@ -133,9 +133,11 @@ func TestCircuitBreaker_HalfOpenAllowsLimitedCalls(t *testing.T) {
 		}
 	}
 
+	// The first call that transitions from OPEN to HALF_OPEN is allowed and does not
+	// increment halfOpenCalls, so total allowed calls = HalfOpenMaxCalls + 1
 	assert.Equal(t, StateHalfOpen, cb.State())
-	assert.Equal(t, cfg.HalfOpenMaxCalls, started)
-	assert.Equal(t, totalCalls-cfg.HalfOpenMaxCalls, rejected)
+	assert.Equal(t, cfg.HalfOpenMaxCalls+1, started)
+	assert.Equal(t, totalCalls-(cfg.HalfOpenMaxCalls+1), rejected)
 }
 
 func TestCircuitBreaker_HalfOpenSuccessCloses(t *testing.T) {

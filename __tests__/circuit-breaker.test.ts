@@ -1,3 +1,4 @@
+import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // Minimal ambient declarations to satisfy TypeScript without relying on external test type packages.
@@ -21,7 +22,8 @@ noop.skip = noop
 const maybeDescribe: any = isJestRuntime && typeof describe === 'function' ? describe : noop
 
 if (isJestRuntime) {
-  jest.mock('date-fns', () => {
+  jest.mock('date-fns', () => ({
+  ...jest.requireActual('date-fns'),
     let actual: any = {}
     try {
       actual = jest.requireActual('date-fns')
@@ -35,7 +37,8 @@ if (isJestRuntime) {
     }
   })
 
-  jest.mock('react-use', () => {
+  jest.mock('react-use', () => ({
+  ...jest.requireActual('react-use'),
     let actual: any = {}
     try {
       actual = jest.requireActual('react-use')
@@ -48,7 +51,8 @@ if (isJestRuntime) {
     }
   })
 
-  jest.mock('@/config/redis', () => {
+  jest.mock('@/config/redis', () => ({
+  ...jest.requireActual('@/config/redis'),
     let actual: any = {}
     try {
       actual = jest.requireActual('@/config/redis')

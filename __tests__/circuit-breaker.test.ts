@@ -1,7 +1,8 @@
 const { describe, it, expect, jest, afterEach } = require('@jest/globals')
 
-// Avoid loading ESM `@jest/globals` via a non-jest runner (e.g. vitest) which can trigger
-// "Failed to load url @jest/globals". If such a runner is present, skip this suite.
+// In CI this repo may be executed by non-jest tooling (or mixed runners) which can choke
+// on @jest/globals ESM loading. Keep a hard runtime gate so the suite is skipped unless
+// we're clearly in a Jest worker.
 const isJestRuntime =
   typeof process !== 'undefined' &&
   process.env &&
@@ -108,18 +109,18 @@ maybeDescribe('redis client behavior (mocked)', () => {
   it('del returns 1 when key existed and 0 otherwise', async () => {
     const client = await getRedisClient()
 
+    expect(await client.del('nope')).toBe(0)
+
     await client.set('k2', 'v2')
-    await expect(client.del('k2')).resolves.toBe(1)
-    await expect(client.del('k2')).resolves.toBe(0)
+    expect(await client.del('k2')).toBe(1)
+    expect(await client.get('k2')).toBeNull()
+
+    expect(client.del).toHaveBeenCalled()
   })
 
-  it('getRedisClient exists and returns a client with expected methods', async () => {
-    expect(typeof getRedisClient).toBe('function')
+  it('quit resolves OK', async () => {
     const client = await getRedisClient()
-    expect(client && typeof client).toBe('object')
-    expect(typeof client.get).toBe('function')
-    expect(typeof client.set).toBe('function')
-    expect(typeof client.del).toBe('function')
-    expect(typeof client.quit).toBe('function')
+    await expect(client.quit()).resolves.toBe('OK')
+    expect(client.quit).toHaveBeenCalled()
   })
 })

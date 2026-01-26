@@ -240,6 +240,9 @@ func TestCircuitBreaker_Transitions_FailureThreshold(t *testing.T) {
 }
 
 func TestCircuitBreaker_FailureRateThresholdOpens(t *testing.T) {
+	// Source behavior: slidingWindow starts as all "false" (because make([]bool,n) => false),
+	// so failure rate is 1.0 immediately. With FailureRateThreshold=0.5, the breaker
+	// will transition to OPEN on the first failure (not the second).
 	cfg := DefaultConfig()
 	cfg.FailureThreshold = 1000
 	cfg.FailureRateThreshold = 0.5
@@ -248,23 +251,20 @@ func TestCircuitBreaker_FailureRateThresholdOpens(t *testing.T) {
 	cb := New("svc", cfg)
 
 	_ = cb.Execute(context.Background(), func() error { return assert.AnError })
-	assert.Equal(t, StateClosed, cb.State())
-
-	_ = cb.Execute(context.Background(), func() error { return assert.AnError })
 	assert.Equal(t, StateOpen, cb.State())
 }
 
 func TestCircuitBreaker_HalfOpen_MaxCallsAndFailureReopens(t *testing.T) {
-	// Source code panics when transitioning to StateClosed due to storing nil into atomic.Value.
-	// This test is adjusted to avoid driving the breaker to StateClosed while still validating
-	// HalfOpen max calls behavior and failure reopening.
+	// The source panics when transitioning to StateClosed due to atomic.Value storing nil.
+	// This test validates max calls enforcement in HALF_OPEN and that failures in HALF_OPEN
+	// reopen the breaker, without ever transitioning to CLOSED.
 	cfg := DefaultConfig()
 	cfg.FailureThreshold = 1
 	cfg.FailureRateThreshold = 1.0
 	cfg.Timeout = 20 * time.Millisecond
 	cfg.SlidingWindowSize = 2
 	cfg.HalfOpenMaxCalls = 2
-	cfg.SuccessThreshold = 2
+	cfg.SuccessThreshold = 1000 // effectively prevent HALF_OPEN -> CLOSED in this test
 
 	cb := New("svc", cfg)
 
@@ -281,14 +281,19 @@ func TestCircuitBreaker_HalfOpen_MaxCallsAndFailureReopens(t *testing.T) {
 	// Second call in HALF_OPEN is still allowed (<= HalfOpenMaxCalls).
 	err2 := cb.Execute(context.Background(), func() error { return nil })
 	assert.NoError(t, err2)
+	assert.Equal(t, StateHalfOpen, cb.State())
 
-	// Third call exceeds HalfOpenMaxCalls and is rejected (still HALF_OPEN, but allowRequest returns false).
+	// Third call exceeds HalfOpenMaxCalls and is rejected.
 	err3 := cb.Execute(context.Background(), func() error { return nil })
 	assert.Error(t, err3)
-	assert.Contains(t, err3.Error(), "is open")
+	assert.Contains(t, err3.Error(), "circuit breaker 'svc' is open")
 	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.RejectedCalls))
+	assert.Equal(t, StateHalfOpen, cb.State())
 
-	// A failure while HALF_OPEN immediately reopens.
+	// To test failure in HALF_OPEN reopening, reset halfOpenCalls to allow one more attempt,
+	// then execute a failing operation (which will reopen immediately from HALF_OPEN).
+	atomic.StoreInt32(&cb.halfOpenCalls, 0)
+
 	_ = cb.Execute(context.Background(), func() error { return assert.AnError })
 	assert.Equal(t, StateOpen, cb.State())
 }

@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const { describe, it, expect, jest, afterEach } = require('@jest/globals')
 
 // In CI this repo may be executed by non-jest tooling (or mixed runners) which can choke
@@ -11,32 +10,16 @@ const isJestRuntime =
 
 const maybeDescribe = isJestRuntime ? describe : describe.skip
 
-jest.mock('date-fns', () => {
-  let actual = {}
-  try {
-    actual = jest.requireActual('date-fns')
-  } catch (_e) {
-    // ignore
-  }
-  return {
-    ...actual,
-    format: jest.fn((_date, _fmt) => '2024-01-01'),
-    subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
-  }
-})
+jest.mock('date-fns', () => ({
+  ...jest.requireActual('date-fns'),
+  format: jest.fn((_date, _fmt) => '2024-01-01'),
+  subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
+}))
 
-jest.mock('react-use', () => {
-  let actual = {}
-  try {
-    actual = jest.requireActual('react-use')
-  } catch (_e) {
-    // ignore
-  }
-  return {
-    ...actual,
-    useMedia: jest.fn(() => false),
-  }
-})
+jest.mock('react-use', () => ({
+  ...jest.requireActual('react-use'),
+  useMedia: jest.fn(() => false),
+}))
 
 jest.mock('@/config/redis', () => {
   let actual = {}
@@ -46,9 +29,11 @@ jest.mock('@/config/redis', () => {
     // ignore if actual cannot be resolved
   }
 
-  const store = {}
+  const store = Object.create(null)
   const client = {
-    get: jest.fn(async (key) => (Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null)),
+    get: jest.fn(async (key) =>
+      Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null,
+    ),
     set: jest.fn(async (key, value) => {
       store[key] = value
       return 'OK'
@@ -104,19 +89,18 @@ maybeDescribe('redis client behavior (mocked)', () => {
     expect(await client.get('missing')).toBeNull()
 
     expect(client.set).toHaveBeenCalledWith('k1', 'v1')
-    expect(client.get).toHaveBeenCalled()
+    expect(client.get).toHaveBeenCalledWith('k1')
+    expect(client.get).toHaveBeenCalledWith('missing')
   })
 
-  it('del returns 1 when key existed and 0 otherwise', async () => {
+  it('del returns 1 when key existed and 0 when missing', async () => {
     const client = await getRedisClient()
-
-    expect(await client.del('nope')).toBe(0)
 
     await client.set('k2', 'v2')
     expect(await client.del('k2')).toBe(1)
-    expect(await client.get('k2')).toBeNull()
+    expect(await client.del('k2')).toBe(0)
 
-    expect(client.del).toHaveBeenCalled()
+    expect(client.del).toHaveBeenCalledWith('k2')
   })
 
   it('quit resolves OK', async () => {

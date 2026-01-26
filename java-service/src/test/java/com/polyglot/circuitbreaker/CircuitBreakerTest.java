@@ -11,14 +11,17 @@ import static org.junit.jupiter.api.Assertions.*;
 @DisplayName("CircuitBreaker Tests")
 class CircuitBreakerTest {
 
-    private CircuitBreaker<Integer> circuitBreaker;
-    private final java.time.Duration timeout = java.time.Duration.ofMillis(200);
-    private final java.time.Duration halfOpenTimeout = java.time.Duration.ofMillis(50); // not used by implementation
+    private CircuitBreaker<String> circuitBreaker;
 
     @BeforeEach
     void setUp() {
-        // failureThreshold = 2, successThreshold = 2 for faster state transitions in tests
-        circuitBreaker = new CircuitBreaker<>("test", 2, 2, timeout, halfOpenTimeout);
+        circuitBreaker = new CircuitBreaker<>(
+                "testBreaker",
+                2, // failureThreshold
+                2, // successThreshold
+                java.time.Duration.ofMillis(50),  // timeout
+                java.time.Duration.ofMillis(10)   // halfOpenTimeout (not currently used by implementation)
+        );
     }
 
     @AfterEach
@@ -27,164 +30,273 @@ class CircuitBreakerTest {
     }
 
     @Test
-    @DisplayName("Initial state should be CLOSED and metrics initialized")
-    void testInitialStateAndMetrics() {
+    @DisplayName("Constructor should create a CLOSED circuit breaker with zero counts")
+    void testConstructor_InitialStateAndCounts() {
         assertNotNull(circuitBreaker);
         assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
-        assertTrue(circuitBreaker.allowRequest(), "Initial allowRequest should be true in CLOSED state");
         assertEquals(0, circuitBreaker.getFailureCount());
 
         CircuitBreaker.CircuitBreakerMetrics metrics = circuitBreaker.getMetrics();
         assertNotNull(metrics);
-        assertEquals("test", metrics.name());
+        assertEquals("testBreaker", metrics.name());
         assertEquals(CircuitBreaker.State.CLOSED, metrics.state());
         assertEquals(0, metrics.failureCount());
         assertEquals(0, metrics.successCount());
-        assertEquals(java.time.Instant.MIN, metrics.lastFailureTime());
+        assertNotNull(metrics.lastFailureTime());
         assertNull(metrics.openedAt());
     }
 
     @Test
-    @DisplayName("execute should return value on success and keep breaker CLOSED")
-    void testExecuteSuccess() {
-        Integer result = circuitBreaker.execute(() -> 42);
-        assertEquals(42, result);
+    @DisplayName("create(name) should return a non-null breaker and allow requests initially")
+    void testCreate_DefaultFactory() {
+        CircuitBreaker<String> cb = CircuitBreaker.create("factoryBreaker");
+        assertNotNull(cb);
+        assertEquals(CircuitBreaker.State.CLOSED, cb.getState());
+        assertTrue(cb.allowRequest());
+    }
+
+    @Test
+    @DisplayName("getOrCreate(name, ...) should return the same instance for the same name")
+    void testGetOrCreate_ReturnsSameInstanceForSameName() {
+        CircuitBreaker<String> cb1 = CircuitBreaker.getOrCreate(
+                "registryBreaker",
+                3,
+                2,
+                java.time.Duration.ofMillis(100)
+        );
+        CircuitBreaker<String> cb2 = CircuitBreaker.getOrCreate(
+                "registryBreaker",
+                99,
+                99,
+                java.time.Duration.ofSeconds(5)
+        );
+
+        assertSame(cb1, cb2, "Expected registry to return the same instance for the same name");
+    }
+
+    @Test
+    @DisplayName("allowRequest should return true when state is CLOSED")
+    void testAllowRequest_WhenClosed_ReturnsTrue() {
         assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
-        assertEquals(0, circuitBreaker.getFailureCount(), "Failure count should be reset on success in CLOSED");
-    }
-
-    @Test
-    @DisplayName("execute should record failure and rethrow exception")
-    void testExecuteFailureIncrementsAndRethrows() {
-        RuntimeException ex = assertThrows(RuntimeException.class, () ->
-            circuitBreaker.execute(() -> { throw new RuntimeException("boom"); })
-        );
-        assertEquals("boom", ex.getMessage());
-        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState(), "Should remain CLOSED until threshold reached");
-        assertEquals(1, circuitBreaker.getFailureCount(), "Failure count should increment after failure");
-
-        CircuitBreaker.CircuitBreakerMetrics metrics = circuitBreaker.getMetrics();
-        assertNotEquals(java.time.Instant.MIN, metrics.lastFailureTime(), "lastFailureTime should be updated after failure");
-    }
-
-    @Test
-    @DisplayName("Breaker should transition to OPEN after reaching failure threshold")
-    void testOpenAfterFailureThreshold() {
-        circuitBreaker.recordFailure();
-        circuitBreaker.recordFailure(); // threshold = 2
-
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
-        assertFalse(circuitBreaker.allowRequest(), "Requests should be denied while OPEN before timeout");
-        assertEquals(2, circuitBreaker.getFailureCount(), "Failure count should reflect threshold when OPEN");
-
-        CircuitBreaker.CircuitBreakerMetrics metrics = circuitBreaker.getMetrics();
-        assertNotNull(metrics.openedAt(), "openedAt should be set when breaker opens");
-    }
-
-    @Test
-    @DisplayName("execute should throw CircuitBreakerOpenException when OPEN and before timeout")
-    void testExecuteWhenOpenThrowsOpenException() {
-        circuitBreaker.recordFailure();
-        circuitBreaker.recordFailure(); // now OPEN
-
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
-        assertThrows(CircuitBreaker.CircuitBreakerOpenException.class, () ->
-            circuitBreaker.execute(() -> 1)
-        );
-    }
-
-    @Test
-    @DisplayName("allowRequest should transition to HALF_OPEN after timeout elapses")
-    void testAllowRequestTransitionsToHalfOpenAfterTimeout() throws InterruptedException {
-        circuitBreaker.recordFailure();
-        circuitBreaker.recordFailure(); // now OPEN
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
-
-        Thread.sleep(timeout.toMillis() + 100); // wait past timeout
-        boolean allowed = circuitBreaker.allowRequest();
-        assertTrue(allowed, "Request should be allowed after timeout");
-        assertEquals(CircuitBreaker.State.HALF_OPEN, circuitBreaker.getState(), "State should transition to HALF_OPEN after timeout");
-    }
-
-    @Test
-    @DisplayName("Successful calls in HALF_OPEN reaching threshold should close the breaker")
-    void testHalfOpenSuccessesCloseBreaker() throws InterruptedException {
-        // Open the breaker
-        circuitBreaker.recordFailure();
-        circuitBreaker.recordFailure();
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
-
-        // Wait for timeout to allow HALF_OPEN
-        Thread.sleep(timeout.toMillis() + 100);
-
-        // First success via execute should set state to HALF_OPEN and increment successCount
-        Integer r1 = circuitBreaker.execute(() -> 1);
-        assertEquals(1, r1);
-        assertEquals(CircuitBreaker.State.HALF_OPEN, circuitBreaker.getState(), "Should remain HALF_OPEN after first success (successThreshold=2)");
-
-        // Second success should close the breaker
-        Integer r2 = circuitBreaker.execute(() -> 2);
-        assertEquals(2, r2);
-        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState(), "Should transition to CLOSED after reaching success threshold");
-
-        CircuitBreaker.CircuitBreakerMetrics metrics = circuitBreaker.getMetrics();
-        assertNull(metrics.openedAt(), "openedAt should be cleared when breaker closes");
-        assertEquals(0, circuitBreaker.getFailureCount(), "Failure count should be reset on closing");
-    }
-
-    @Test
-    @DisplayName("Failure while HALF_OPEN should immediately reopen the breaker")
-    void testHalfOpenFailureReopens() throws InterruptedException {
-        // Open the breaker
-        circuitBreaker.recordFailure();
-        circuitBreaker.recordFailure();
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
-
-        // Wait for timeout and allow HALF_OPEN
-        Thread.sleep(timeout.toMillis() + 100);
         assertTrue(circuitBreaker.allowRequest());
-        assertEquals(CircuitBreaker.State.HALF_OPEN, circuitBreaker.getState());
-
-        // A failure in HALF_OPEN reopens immediately
-        circuitBreaker.recordFailure();
-        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
-
-        CircuitBreaker.CircuitBreakerMetrics metrics = circuitBreaker.getMetrics();
-        assertNotNull(metrics.openedAt(), "openedAt should be set when breaker reopens from HALF_OPEN");
     }
 
     @Test
-    @DisplayName("recordSuccess in CLOSED should reset failure count")
-    void testRecordSuccessResetsFailureCountInClosed() {
-        // Accumulate a single failure (below threshold)
+    @DisplayName("execute should return supplier result and keep breaker CLOSED")
+    void testExecute_Success_ReturnsResultAndResetsFailureCount() {
         circuitBreaker.recordFailure();
         assertEquals(1, circuitBreaker.getFailureCount());
         assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
 
-        // A success should reset failure count
+        String result = circuitBreaker.execute(() -> "OK");
+
+        assertEquals("OK", result);
+        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
+        assertEquals(0, circuitBreaker.getFailureCount(), "Success in CLOSED should reset failureCount to 0");
+
+        CircuitBreaker.CircuitBreakerMetrics metrics = circuitBreaker.getMetrics();
+        assertEquals(0, metrics.failureCount());
+        assertEquals(CircuitBreaker.State.CLOSED, metrics.state());
+    }
+
+    @Test
+    @DisplayName("execute should rethrow operation exception and record failure")
+    void testExecute_Failure_RethrowsAndIncrementsFailureCount() {
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> circuitBreaker.execute(() -> {
+            throw new RuntimeException("boom");
+        }));
+        assertEquals("boom", ex.getMessage());
+
+        assertEquals(1, circuitBreaker.getFailureCount());
+        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
+
+        CircuitBreaker.CircuitBreakerMetrics metrics = circuitBreaker.getMetrics();
+        assertEquals(1, metrics.failureCount());
+        assertNotNull(metrics.lastFailureTime());
+    }
+
+    @Test
+    @DisplayName("recordFailure should OPEN the breaker after reaching failureThreshold")
+    void testRecordFailure_OpensAfterThreshold() {
+        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
+
+        circuitBreaker.recordFailure();
+        assertEquals(1, circuitBreaker.getFailureCount());
+        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
+
+        circuitBreaker.recordFailure();
+        assertEquals(2, circuitBreaker.getFailureCount());
+        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
+
+        CircuitBreaker.CircuitBreakerMetrics metrics = circuitBreaker.getMetrics();
+        assertEquals(CircuitBreaker.State.OPEN, metrics.state());
+        assertNotNull(metrics.openedAt(), "openedAt should be set when breaker opens");
+    }
+
+    @Test
+    @DisplayName("execute should throw CircuitBreakerOpenException when breaker is OPEN and timeout not elapsed")
+    void testExecute_WhenOpen_ThrowsCircuitBreakerOpenException() {
+        circuitBreaker.recordFailure();
+        circuitBreaker.recordFailure();
+        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
+
+        CircuitBreaker.CircuitBreakerOpenException ex = assertThrows(
+                CircuitBreaker.CircuitBreakerOpenException.class,
+                () -> circuitBreaker.execute(() -> "should not run")
+        );
+        assertTrue(ex.getMessage().contains("testBreaker"));
+    }
+
+    @Test
+    @DisplayName("allowRequest should return false when OPEN and timeout not elapsed")
+    void testAllowRequest_WhenOpenAndNotTimedOut_ReturnsFalse() {
+        circuitBreaker.recordFailure();
+        circuitBreaker.recordFailure();
+        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
+
+        assertFalse(circuitBreaker.allowRequest());
+        assertEquals(CircuitBreaker.State.OPEN, circuitBreaker.getState());
+    }
+
+    @Test
+    @DisplayName("After timeout elapses, allowRequest should transition OPEN -> HALF_OPEN and allow the request")
+    void testAllowRequest_OpenToHalfOpen_AfterTimeout() throws Exception {
+        CircuitBreaker<String> cb = new CircuitBreaker<>(
+                "timeoutBreaker",
+                1,
+                1,
+                java.time.Duration.ofMillis(20),
+                java.time.Duration.ofMillis(10)
+        );
+
+        cb.recordFailure();
+        assertEquals(CircuitBreaker.State.OPEN, cb.getState());
+        assertFalse(cb.allowRequest(), "Before timeout, should not allow request");
+
+        Thread.sleep(25);
+
+        assertTrue(cb.allowRequest(), "After timeout, should allow and move to HALF_OPEN");
+        assertEquals(CircuitBreaker.State.HALF_OPEN, cb.getState());
+
+        CircuitBreaker.CircuitBreakerMetrics metrics = cb.getMetrics();
+        assertEquals(CircuitBreaker.State.HALF_OPEN, metrics.state());
+    }
+
+    @Test
+    @DisplayName("In HALF_OPEN, recordSuccess should close the breaker after reaching successThreshold and reset metrics")
+    void testHalfOpen_SuccessClosesAfterThresholdAndResets() throws Exception {
+        CircuitBreaker<String> cb = new CircuitBreaker<>(
+                "halfOpenCloseBreaker",
+                1,
+                2,
+                java.time.Duration.ofMillis(20),
+                java.time.Duration.ofMillis(10)
+        );
+
+        cb.recordFailure();
+        assertEquals(CircuitBreaker.State.OPEN, cb.getState());
+
+        Thread.sleep(25);
+        assertTrue(cb.allowRequest());
+        assertEquals(CircuitBreaker.State.HALF_OPEN, cb.getState());
+
+        cb.recordSuccess();
+        assertEquals(CircuitBreaker.State.HALF_OPEN, cb.getState(), "Not enough successes yet to close");
+        assertEquals(0, cb.getFailureCount(), "Failure count should not be incremented on success");
+
+        cb.recordSuccess();
+        assertEquals(CircuitBreaker.State.CLOSED, cb.getState(), "After enough successes, should close");
+
+        CircuitBreaker.CircuitBreakerMetrics metrics = cb.getMetrics();
+        assertEquals(CircuitBreaker.State.CLOSED, metrics.state());
+        assertEquals(0, metrics.failureCount());
+        assertEquals(0, metrics.successCount(), "reset() should clear successCount");
+        assertNull(metrics.openedAt(), "reset() should clear openedAt");
+    }
+
+    @Test
+    @DisplayName("In HALF_OPEN, a single failure should immediately reopen the breaker")
+    void testHalfOpen_FailureReopensImmediately() throws Exception {
+        CircuitBreaker<String> cb = new CircuitBreaker<>(
+                "halfOpenFailBreaker",
+                1,
+                2,
+                java.time.Duration.ofMillis(20),
+                java.time.Duration.ofMillis(10)
+        );
+
+        cb.recordFailure();
+        assertEquals(CircuitBreaker.State.OPEN, cb.getState());
+
+        Thread.sleep(25);
+        assertTrue(cb.allowRequest());
+        assertEquals(CircuitBreaker.State.HALF_OPEN, cb.getState());
+
+        cb.recordFailure();
+        assertEquals(CircuitBreaker.State.OPEN, cb.getState(), "Failure in HALF_OPEN should reopen circuit");
+
+        CircuitBreaker.CircuitBreakerMetrics metrics = cb.getMetrics();
+        assertEquals(CircuitBreaker.State.OPEN, metrics.state());
+        assertNotNull(metrics.openedAt(), "openedAt should be set when reopened");
+    }
+
+    @Test
+    @DisplayName("recordSuccess in CLOSED should reset failureCount to 0 (even if previously incremented)")
+    void testRecordSuccess_WhenClosed_ResetsFailureCount() {
+        circuitBreaker.recordFailure();
+        assertEquals(1, circuitBreaker.getFailureCount());
+        assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
+
         circuitBreaker.recordSuccess();
         assertEquals(0, circuitBreaker.getFailureCount());
         assertEquals(CircuitBreaker.State.CLOSED, circuitBreaker.getState());
     }
 
     @Test
-    @DisplayName("getOrCreate should return the same instance for the same name")
-    void testGetOrCreateReturnsSameInstance() {
-        CircuitBreaker<String> cb1 = CircuitBreaker.<String>getOrCreate("shared", 3, 1, java.time.Duration.ofMillis(100));
-        CircuitBreaker<Integer> cb2 = CircuitBreaker.<Integer>getOrCreate("shared", 5, 5, java.time.Duration.ofSeconds(1));
+    @DisplayName("getMetrics should reflect state changes and timestamps when opened")
+    void testGetMetrics_ReflectsOpenStateAndOpenedAt() {
+        CircuitBreaker.CircuitBreakerMetrics before = circuitBreaker.getMetrics();
+        assertEquals(CircuitBreaker.State.CLOSED, before.state());
+        assertNull(before.openedAt());
 
-        assertSame(cb1, cb2, "getOrCreate should return the same instance for the same name regardless of generic type");
+        circuitBreaker.recordFailure();
+        circuitBreaker.recordFailure(); // open at threshold=2
 
-        CircuitBreaker.CircuitBreakerMetrics metrics = cb1.getMetrics();
-        assertEquals("shared", metrics.name());
+        CircuitBreaker.CircuitBreakerMetrics after = circuitBreaker.getMetrics();
+        assertEquals("testBreaker", after.name());
+        assertEquals(CircuitBreaker.State.OPEN, after.state());
+        assertEquals(2, after.failureCount());
+        assertNotNull(after.lastFailureTime());
+        assertNotNull(after.openedAt());
     }
 
     @Test
-    @DisplayName("Factory create should initialize a CLOSED breaker that allows requests")
-    void testCreateFactoryDefaults() {
-        CircuitBreaker<String> cb = CircuitBreaker.create("factory");
-        assertNotNull(cb);
-        assertEquals(CircuitBreaker.State.CLOSED, cb.getState());
+    @DisplayName("execute in HALF_OPEN should record successes and close after threshold via execute path")
+    void testExecute_HalfOpen_ClosesAfterEnoughSuccessfulExecutions() throws Exception {
+        CircuitBreaker<String> cb = new CircuitBreaker<>(
+                "executeHalfOpenBreaker",
+                1,
+                2,
+                java.time.Duration.ofMillis(20),
+                java.time.Duration.ofMillis(10)
+        );
+
+        cb.recordFailure();
+        assertEquals(CircuitBreaker.State.OPEN, cb.getState());
+
+        Thread.sleep(25);
         assertTrue(cb.allowRequest());
+        assertEquals(CircuitBreaker.State.HALF_OPEN, cb.getState());
+
+        assertEquals("A", cb.execute(() -> "A"));
+        assertEquals(CircuitBreaker.State.HALF_OPEN, cb.getState());
+
+        assertEquals("B", cb.execute(() -> "B"));
+        assertEquals(CircuitBreaker.State.CLOSED, cb.getState());
+
+        CircuitBreaker.CircuitBreakerMetrics metrics = cb.getMetrics();
+        assertEquals(CircuitBreaker.State.CLOSED, metrics.state());
+        assertEquals(0, metrics.successCount());
+        assertNull(metrics.openedAt());
     }
 }

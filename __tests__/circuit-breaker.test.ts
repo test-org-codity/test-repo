@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const { describe, it, expect, jest, afterEach } = require('@jest/globals')
 
 // In CI this repo may be executed by non-jest tooling (or mixed runners) which can choke

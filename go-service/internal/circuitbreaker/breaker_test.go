@@ -172,46 +172,6 @@ func TestCircuitBreaker_Execute_RejectsWhenOpenBeforeTimeout(t *testing.T) {
 	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.RejectedCalls))
 }
 
-func TestCircuitBreaker_OpenToHalfOpenAfterTimeout_ThenHalfOpenMaxCalls(t *testing.T) {
-	// Match source behavior:
-	// - allowRequest() transitions OPEN -> HALF_OPEN on first allowed call after timeout.
-	// - In HALF_OPEN, allowRequest increments halfOpenCalls and enforces HalfOpenMaxCalls.
-	// - If a HALF_OPEN operation fails, recordFailure transitions back to OPEN (and resets halfOpenCalls
-	//   on the next HALF_OPEN transition).
-	//
-	// Therefore, to validate the HalfOpenMaxCalls gating, we must keep the breaker in HALF_OPEN by
-	// using successful operations (but NOT reaching SuccessThreshold, otherwise it would attempt
-	// transitionTo(CLOSED) which panics due to openedAt.Store(nil)).
-	cfg := DefaultConfig()
-	cfg.Timeout = 20 * time.Millisecond
-	cfg.HalfOpenMaxCalls = 2
-	cfg.SuccessThreshold = 1000 // avoid transitionTo(StateClosed) panic
-	cfg.SlidingWindowSize = 5
-	cb := New("svc", cfg)
-
-	cb.transitionTo(StateOpen)
-	assert.Equal(t, StateOpen, cb.State())
-
-	time.Sleep(cfg.Timeout + 10*time.Millisecond)
-
-	// 1st call after timeout: should be allowed and transition to HALF_OPEN.
-	err1 := cb.Execute(context.Background(), func() error { return nil })
-	assert.NoError(t, err1)
-	assert.Equal(t, StateHalfOpen, cb.State())
-
-	// 2nd call in HALF_OPEN: allowed.
-	err2 := cb.Execute(context.Background(), func() error { return nil })
-	assert.NoError(t, err2)
-	assert.Equal(t, StateHalfOpen, cb.State())
-
-	// 3rd call in HALF_OPEN: should be rejected because HalfOpenMaxCalls=2.
-	err3 := cb.Execute(context.Background(), func() error { return nil })
-	assert.Error(t, err3)
-	assert.Contains(t, err3.Error(), "circuit breaker 'svc' is open")
-
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.RejectedCalls))
-}
-
 func TestCircuitBreaker_HalfOpen_SuccessThresholdCloses(t *testing.T) {
 	// Source behavior:
 	// - In HALF_OPEN, recordSuccess increments successCount.

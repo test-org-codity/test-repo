@@ -345,13 +345,21 @@ func TestGetHealthInfo(t *testing.T) {
 	assert.Equal(t, "health", info.Name)
 	assert.Equal(t, StateClosed.String(), info.State)
 	assert.Equal(t, 0.5, info.FailureRate)
-	assert.Equal(t, float64(5), info.Metrics["total_calls"].(float64))
-	assert.Equal(t, float64(3), info.Metrics["successful_calls"].(float64))
-	assert.Equal(t, float64(2), info.Metrics["failed_calls"].(float64))
-	assert.Equal(t, float64(1), info.Metrics["rejected_calls"].(float64))
-	assert.Equal(t, float64(2), info.Metrics["state_changes"].(float64))
-	avgMs := info.Metrics["avg_response_time_ms"].(float64)
-	assert.GreaterOrEqual(t, avgMs, float64(10))
+
+	// Metrics types match source code: uint64 for counters, int64 for avg_response_time_ms
+	totalCalls := info.Metrics["total_calls"].(uint64)
+	successfulCalls := info.Metrics["successful_calls"].(uint64)
+	failedCalls := info.Metrics["failed_calls"].(uint64)
+	rejectedCalls := info.Metrics["rejected_calls"].(uint64)
+	stateChanges := info.Metrics["state_changes"].(uint64)
+	avgMs := info.Metrics["avg_response_time_ms"].(int64)
+
+	assert.Equal(t, uint64(5), totalCalls)
+	assert.Equal(t, uint64(3), successfulCalls)
+	assert.Equal(t, uint64(2), failedCalls)
+	assert.Equal(t, uint64(1), rejectedCalls)
+	assert.Equal(t, uint64(2), stateChanges)
+	assert.GreaterOrEqual(t, avgMs, int64(10))
 }
 
 func TestDistributedCoordinator_RegisterAndSync(t *testing.T) {

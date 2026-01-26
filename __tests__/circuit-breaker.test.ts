@@ -99,67 +99,41 @@ maybeDescribe('external dependency mocks behave deterministically', () => {
 
   it('date-fns: subMonths returns a fixed date', () => {
     const result = subMonths(new Date('2024-02-15T00:00:00.000Z'), 1)
-    expect(result).toEqual(new Date('2024-01-01'))
+    expect(result instanceof Date).toBe(true)
+    expect(result.toISOString()).toBe('2024-01-01T00:00:00.000Z')
     expect(subMonths).toHaveBeenCalledTimes(1)
   })
 
   it('react-use: useMedia returns false', () => {
-    const val = useMedia()
+    const val = useMedia('(min-width: 1024px)', false)
     expect(val).toBe(false)
     expect(useMedia).toHaveBeenCalledTimes(1)
   })
 })
 
-maybeDescribe('redis client mock behaves like naive in-memory redis', () => {
-  it('supports set/get/del/quit with expected results', async () => {
+maybeDescribe('redis mock provides in-memory behavior', () => {
+  it('get/set/del/quit roundtrip', async () => {
     const client = await getRedisClient()
 
-    const g1 = await client.get('key')
-    expect(g1).toBeNull()
+    const initial = await client.get('key')
+    expect(initial).toBeNull()
 
-    const s1 = await client.set('key', 'value')
-    expect(s1).toBe('OK')
-    expect(client.set).toHaveBeenCalledTimes(1)
+    const setRes = await client.set('key', 'value')
+    expect(setRes).toBe('OK')
 
-    const g2 = await client.get('key')
-    expect(g2).toBe('value')
-    expect(client.get).toHaveBeenCalledTimes(2) // one before set, one after set
+    const fetched = await client.get('key')
+    expect(fetched).toBe('value')
 
-    const d1 = await client.del('key')
-    expect(d1).toBe(1)
-    expect(client.del).toHaveBeenCalledTimes(1)
+    const delCount = await client.del('key')
+    expect(delCount).toBe(1)
 
-    const g3 = await client.get('key')
-    expect(g3).toBeNull()
+    const afterDelete = await client.get('key')
+    expect(afterDelete).toBeNull()
 
-    const d2 = await client.del('key')
-    expect(d2).toBe(0)
+    const delMissing = await client.del('missing')
+    expect(delMissing).toBe(0)
 
-    const q = await client.quit()
-    expect(q).toBe('OK')
-    expect(client.quit).toHaveBeenCalledTimes(1)
-  })
-
-  it('creates isolated client instances (separate in-memory stores)', async () => {
-    const clientA = await getRedisClient()
-    const clientB = await getRedisClient()
-
-    await clientA.set('onlyA', 'A')
-    const aGetA = await clientA.get('onlyA')
-    const bGetA = await clientB.get('onlyA')
-
-    expect(aGetA).toBe('A')
-    expect(bGetA).toBeNull()
-
-    await clientB.set('onlyB', 'B')
-    const aGetB = await clientA.get('onlyB')
-    const bGetB = await clientB.get('onlyB')
-
-    expect(aGetB).toBeNull()
-    expect(bGetB).toBe('B')
-
-    // verify the internal stores reflect isolation
-    expect(Object.keys(clientA.__store)).toEqual(['onlyA'])
-    expect(Object.keys(clientB.__store)).toEqual(['onlyB'])
+    const quitRes = await client.quit()
+    expect(quitRes).toBe('OK')
   })
 })

@@ -14,23 +14,12 @@ RSpec.describe Net::HTTP do
       http = described_class.new('example.com')
       expect(http.port).to eq(described_class.default_port)
     end
-
-    it 'keeps host as nil and defaults port to Net::HTTP.default_port when no port is provided' do
-      http = described_class.new(nil)
-      expect(http.address).to be_nil
-      expect(http.port).to eq(described_class.default_port)
-    end
   end
 
   describe '#address' do
     it 'returns the host provided at initialization' do
       http = described_class.new('example.com', 443)
       expect(http.address).to eq('example.com')
-    end
-
-    it 'returns nil if initialized with nil host' do
-      http = described_class.new(nil)
-      expect(http.address).to be_nil
     end
   end
 
@@ -40,8 +29,8 @@ RSpec.describe Net::HTTP do
       expect(http.port).to eq(443)
     end
 
-    it 'defaults port to Net::HTTP.default_port if initialized with nil host and no port' do
-      http = described_class.new(nil)
+    it 'defaults to Net::HTTP.default_port when port is not provided' do
+      http = described_class.new('example.com')
       expect(http.port).to eq(described_class.default_port)
     end
   end

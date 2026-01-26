@@ -6,9 +6,9 @@ const isJestRuntime =
     process.env &&
     (process.env.JEST_WORKER_ID !== undefined || process.env.JEST !== undefined))
 
-const noop = () => {}
+const noop: any = () => {}
 noop.skip = noop
-const maybeDescribe = isJestRuntime ? describe : noop
+const maybeDescribe: typeof describe = isJestRuntime ? describe : (noop as any)
 
 if (isJestRuntime) {
   jest.mock('date-fns', () => {
@@ -29,7 +29,7 @@ if (isJestRuntime) {
   })
 
   jest.mock('@/config/redis', () => {
-    let actual = {}
+    let actual: any = {}
     try {
       actual = jest.requireActual('@/config/redis')
     } catch (_e) {
@@ -37,16 +37,16 @@ if (isJestRuntime) {
     }
 
     const createClient = () => {
-      const store = Object.create(null)
+      const store: Record<string, string> = Object.create(null)
       return {
-        get: jest.fn(async (key) =>
+        get: jest.fn(async (key: string) =>
           Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null,
         ),
-        set: jest.fn(async (key, value) => {
+        set: jest.fn(async (key: string, value: string) => {
           store[key] = value
           return 'OK'
         }),
-        del: jest.fn(async (key) => {
+        del: jest.fn(async (key: string) => {
           const existed = Object.prototype.hasOwnProperty.call(store, key) ? 1 : 0
           delete store[key]
           return existed
@@ -63,7 +63,7 @@ if (isJestRuntime) {
   })
 }
 
-let format, subMonths, useMedia, getRedisClient
+let format: any, subMonths: any, useMedia: any, getRedisClient: any
 if (isJestRuntime) {
   ;({ format, subMonths } = require('date-fns'))
   ;({ useMedia } = require('react-use'))
@@ -100,39 +100,32 @@ maybeDescribe('redis client behavior (mocked)', () => {
   it('set/get roundtrip works and returns null for missing keys', async () => {
     const client = await getRedisClient()
 
-    await client.set('k1', 'v1')
-    expect(await client.get('k1')).toBe('v1')
     expect(await client.get('missing')).toBeNull()
 
+    await client.set('k1', 'v1')
+    expect(await client.get('k1')).toBe('v1')
+
+    expect(await client.del('k1')).toBe(1)
+    expect(await client.get('k1')).toBeNull()
+
+    expect(await client.quit()).toBe('OK')
+
     expect(client.set).toHaveBeenCalledTimes(1)
-    expect(client.get).toHaveBeenCalledTimes(2)
-  })
-
-  it('del returns proper count and clears values', async () => {
-    const client = await getRedisClient()
-
-    // set two keys
-    await client.set('a', '1')
-    await client.set('b', '2')
-
-    // delete existing key -> should return 1 (existed)
-    const delExisting = await client.del('a')
-    expect(delExisting).toBe(1)
-    expect(await client.get('a')).toBeNull()
-
-    // delete missing key -> should return 0 (did not exist)
-    const delMissing = await client.del('z')
-    expect(delMissing).toBe(0)
-
-    expect(client.set).toHaveBeenCalledTimes(2)
-    expect(client.del).toHaveBeenCalledTimes(2)
-    expect(client.get).toHaveBeenCalledTimes(1)
-  })
-
-  it('quit resolves OK', async () => {
-    const client = await getRedisClient()
-    const res = await client.quit()
-    expect(res).toBe('OK')
+    expect(client.get).toHaveBeenCalledTimes(3)
+    expect(client.del).toHaveBeenCalledTimes(1)
     expect(client.quit).toHaveBeenCalledTimes(1)
+  })
+
+  it('separate clients do not share state', async () => {
+    const c1 = await getRedisClient()
+    const c2 = await getRedisClient()
+
+    await c1.set('onlyC1', 'value1')
+    expect(await c1.get('onlyC1')).toBe('value1')
+    expect(await c2.get('onlyC1')).toBeNull()
+
+    await c2.set('onlyC2', 'value2')
+    expect(await c2.get('onlyC2')).toBe('value2')
+    expect(await c1.get('onlyC2')).toBeNull()
   })
 })

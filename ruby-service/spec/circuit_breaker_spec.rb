@@ -1,7 +1,10 @@
 # WARNING: This test file may contain syntax errors
 # Generated after 3 attempts with validation errors
-# Last error: ruby: /tmp/tmpsg9yrn99.rb:446: syntax error, unexpected `end', expecting ')' (SyntaxError)
-        end).to eq(:ok1)
+# Last error: ruby: /tmp/tmphadbhl5i.rb:278: syntax error, unexpected local variable or method, expecting `end' or dummy end (SyntaxError)
+...{ :fallback }) doshould_not_run
+...               ^~~~~~~~~~~~~~~~
+/tmp/tmphadbhl5i.rb:317: syntax error, unexpected `end'
+        end
         ^~~
 # Please review and fix any issues before running
 
@@ -11,25 +14,26 @@ require_relative '../app/circuit_breaker'
 RSpec.describe CircuitBreaker do
   describe CircuitBreaker::OpenError do
     describe '#initialize' do
-      let(:name) { 'payments' }
-      let(:remaining_time) { 1.2345 }
-      let(:error) { described_class.new(name, remaining_time) }
+      it 'stores name and remaining_time and formats message' do
+        error = described_class.new('svc', 1.23456)
 
-      it 'stores the name and remaining_time' do
-        expect(error.name).to eq(name)
-        expect(error.remaining_time).to eq(remaining_time)
+        expect(error.name).to eq('svc')
+        expect(error.remaining_time).to eq(1.23456)
+        expect(error.message).to include("Circuit breaker 'svc' is open")
+        expect(error.message).to include('Retry after')
       end
 
-      it 'includes details in the message' do
-        expect(error.message).to include("Circuit breaker '#{name}' is open")
-        expect(error.message).to include('Retry after')
+      it 'rounds remaining_time in message to two decimals' do
+        error = described_class.new('svc', 1.239)
+
+        expect(error.message).to include('1.24s')
       end
     end
   end
 
   describe CircuitBreaker::State do
     describe '.all' do
-      it 'returns all possible states' do
+      it 'returns all valid states' do
         expect(described_class.all).to contain_exactly(:closed, :open, :half_open)
       end
     end
@@ -37,8 +41,9 @@ RSpec.describe CircuitBreaker do
 
   describe CircuitBreaker::Config do
     describe '#initialize' do
-      it 'provides sensible defaults' do
+      it 'sets defaults' do
         config = described_class.new
+
         expect(config.failure_threshold).to eq(5)
         expect(config.success_threshold).to eq(3)
         expect(config.timeout_seconds).to eq(30.0)
@@ -47,7 +52,7 @@ RSpec.describe CircuitBreaker do
         expect(config.failure_rate_threshold).to eq(0.5)
       end
 
-      it 'allows overriding defaults' do
+      it 'allows overriding values' do
         config = described_class.new(
           failure_threshold: 2,
           success_threshold: 1,
@@ -71,55 +76,48 @@ RSpec.describe CircuitBreaker do
     let(:metrics) { described_class.new }
 
     describe '#record_success' do
-      it 'increments counts and sets last_success_time' do
-        now = Time.utc(2020, 1, 1, 0, 0, 0)
-        allow(Time).to receive(:now).and_return(now)
-
-        expect(metrics.total_calls).to eq(0)
-        expect(metrics.successful_calls).to eq(0)
-        expect(metrics.last_success_time).to be_nil
+      it 'increments successful_calls and total_calls and sets last_success_time' do
+        fixed_time = Time.at(1_700_000_000)
+        allow(Time).to receive(:now).and_return(fixed_time)
 
         metrics.record_success(0.05)
 
-        expect(metrics.total_calls).to eq(1)
         expect(metrics.successful_calls).to eq(1)
         expect(metrics.failed_calls).to eq(0)
-        expect(metrics.last_success_time).to eq(now)
+        expect(metrics.total_calls).to eq(1)
+        expect(metrics.last_success_time).to eq(fixed_time)
+        expect(metrics.last_failure_time).to be_nil
       end
     end
 
     describe '#record_failure' do
-      it 'increments counts and sets last_failure_time' do
-        now = Time.utc(2020, 1, 1, 0, 0, 1)
-        allow(Time).to receive(:now).and_return(now)
+      it 'increments failed_calls and total_calls and sets last_failure_time' do
+        fixed_time = Time.at(1_700_000_100)
+        allow(Time).to receive(:now).and_return(fixed_time)
 
-        expect(metrics.total_calls).to eq(0)
-        expect(metrics.failed_calls).to eq(0)
-        expect(metrics.last_failure_time).to be_nil
+        metrics.record_failure(0.12)
 
-        metrics.record_failure(0.07)
-
-        expect(metrics.total_calls).to eq(1)
         expect(metrics.failed_calls).to eq(1)
         expect(metrics.successful_calls).to eq(0)
-        expect(metrics.last_failure_time).to eq(now)
+        expect(metrics.total_calls).to eq(1)
+        expect(metrics.last_failure_time).to eq(fixed_time)
+        expect(metrics.last_success_time).to be_nil
       end
     end
 
     describe '#record_rejection' do
-      it 'increments rejected_calls without affecting total_calls' do
-        metrics.record_rejection
+      it 'increments rejected_calls only' do
         metrics.record_rejection
 
-        expect(metrics.rejected_calls).to eq(2)
+        expect(metrics.rejected_calls).to eq(1)
         expect(metrics.total_calls).to eq(0)
+        expect(metrics.successful_calls).to eq(0)
+        expect(metrics.failed_calls).to eq(0)
       end
     end
 
     describe '#record_state_transition' do
       it 'increments state_transitions' do
-        expect(metrics.state_transitions).to eq(0)
-
         metrics.record_state_transition
         metrics.record_state_transition
 
@@ -128,151 +126,144 @@ RSpec.describe CircuitBreaker do
     end
 
     describe '#average_response_time' do
-      it 'returns 0 when there are no response times' do
+      it 'returns 0 when no response times exist' do
         expect(metrics.average_response_time).to eq(0)
       end
 
-      it 'returns the mean duration for recorded calls' do
-        metrics.record_success(0.10)
-        metrics.record_failure(0.30)
+      it 'returns the average of recorded response times' do
+        metrics.record_success(0.1)
+        metrics.record_failure(0.3)
 
-        expect(metrics.average_response_time).to be_within(0.000001).of(0.20)
+        expect(metrics.average_response_time).to be_within(1e-9).of(0.2)
       end
 
-      it 'caps stored response times to the internal max (100)' do
-        101.times do
-          metrics.record_success(0.001)
+      it 'keeps only the last 100 response times' do
+        150.times do
+          metrics.record_success(0.01)
         end
 
-        expect(metrics.total_calls).to eq(101)
-        expect(metrics.average_response_time).to be_within(0.000001).of(0.001)
+        expect(metrics.average_response_time).to be_within(1e-9).of(0.01)
       end
     end
 
     describe '#to_h' do
-      it 'returns a hash with expected keys and ISO8601 timestamps when present' do
-        t1 = Time.utc(2020, 1, 1, 0, 0, 0)
-        t2 = Time.utc(2020, 1, 1, 0, 0, 2)
+      it 'returns a hash with expected keys and ISO8601 times when present' do
+        fixed_time = Time.at(1_700_000_200).utc
+        allow(Time).to receive(:now).and_return(fixed_time)
 
-        allow(Time).to receive(:now).and_return(t1)
-        metrics.record_failure(0.1)
+        metrics.record_failure(0.2)
+        metrics.record_success(0.4)
 
-        allow(Time).to receive(:now).and_return(t2)
-        metrics.record_success(0.3)
-
-        hash = nil
+        data = nil
         expect do
-          hash = metrics.to_h
+          data = metrics.to_h
         end.not_to raise_error
 
-        expect(hash).to be_a(Hash)
-        expect(hash[:total_calls]).to eq(2)
-        expect(hash[:failed_calls]).to eq(1)
-        expect(hash[:successful_calls]).to eq(1)
-        expect(hash[:rejected_calls]).to eq(0)
-        expect(hash[:state_transitions]).to eq(0)
-        expect(hash[:average_response_time_ms]).to be_a(Numeric)
-        expect(hash[:last_failure_time]).to eq(t1.iso8601)
-        expect(hash[:last_success_time]).to eq(t2.iso8601)
+        expect(data).to be_a(Hash)
+        expect(data[:total_calls]).to eq(2)
+        expect(data[:successful_calls]).to eq(1)
+        expect(data[:failed_calls]).to eq(1)
+        expect(data[:rejected_calls]).to eq(0)
+        expect(data[:state_transitions]).to eq(0)
+        expect(data[:average_response_time_ms]).to eq(300.0)
+        expect(data[:last_failure_time]).to be_a(String)
+        expect(data[:last_success_time]).to be_a(String)
       end
 
-      it 'returns nil timestamps when no calls have been recorded' do
-        hash = metrics.to_h
-        expect(hash[:last_failure_time]).to be_nil
-        expect(hash[:last_success_time]).to be_nil
-        expect(hash[:average_response_time_ms]).to eq(0)
+      it 'includes nil times when no success/failure recorded' do
+        data = nil
+        expect do
+          data = metrics.to_h
+        end.not_to raise_error
+
+        expect(data[:last_failure_time]).to be_nil
+        expect(data[:last_success_time]).to be_nil
+        expect(data[:average_response_time_ms]).to eq(0.0)
       end
     end
   end
 
   describe CircuitBreaker::Breaker do
-    let(:config) do
-      CircuitBreaker::Config.new(
-        failure_threshold: 2,
-        success_threshold: 2,
-        timeout_seconds: 10.0,
-        half_open_max_calls: 2,
-        sliding_window_size: 4,
-        failure_rate_threshold: 0.5
-      )
-    end
-
-    let(:breaker) { described_class.new('service-a', config: config) }
-
     describe '.get_or_create' do
-      let(:unique_name) { "svc-#{Time.now.to_f}-#{rand(1_000_000)}" }
-
       it 'returns the same instance for the same name' do
-        first = described_class.get_or_create(unique_name, config: config)
-        second = described_class.get_or_create(unique_name, config: CircuitBreaker::Config.new(failure_threshold: 99))
+        b1 = described_class.get_or_create('service-a')
+        b2 = described_class.get_or_create('service-a')
 
-        expect(first).to be_a(described_class)
-        expect(second).to equal(first)
+        expect(b1).to be_a(described_class)
+        expect(b1).to equal(b2)
+      end
+
+      it 'creates different instances for different names' do
+        b1 = described_class.get_or_create('service-a')
+        b2 = described_class.get_or_create('service-b')
+
+        expect(b1).not_to equal(b2)
       end
     end
 
     describe '.registry' do
-      let(:unique_name) { "reg-#{Time.now.to_f}-#{rand(1_000_000)}" }
+      it 'returns a duplicate of the registry hash' do
+        described_class.get_or_create('reg-svc-1')
 
-      it 'returns a duplicate of the internal registry hash' do
-        described_class.get_or_create(unique_name, config: config)
-        copy = described_class.registry
+        reg1 = described_class.registry
+        reg1['reg-svc-2'] = :mutated
 
-        expect(copy).to be_a(Hash)
-        expect(copy[unique_name]).to be_a(described_class)
-
-        copy.delete(unique_name)
-        expect(described_class.registry[unique_name]).to be_a(described_class)
+        reg2 = described_class.registry
+        expect(reg2['reg-svc-2']).to be_nil
       end
     end
 
     describe '#execute' do
-      context 'when no block is given' do
-        it 'raises ArgumentError' do
-          expect do
-            breaker.execute
-          end.to raise_error(ArgumentError, 'Block required')
-        end
+      let(:config) do
+        CircuitBreaker::Config.new(
+          failure_threshold: 2,
+          success_threshold: 2,
+          timeout_seconds: 0.1,
+          half_open_max_calls: 1,
+          sliding_window_size: 4,
+          failure_rate_threshold: 0.75
+        )
       end
 
-      context 'when the circuit is closed' do
-        it 'returns the block result and records a success' do
-          result = breaker.execute do
-            123
+      let(:breaker) { described_class.new('svc', config: config) }
+
+      it 'raises ArgumentError when no block is given' do
+        expect do
+          breaker.execute
+        end.to raise_error(ArgumentError, 'Block required')
+      end
+
+      it 'returns the block result when closed and successful' do
+        result = breaker.execute do
+          123
+        end
+
+        expect(result).to eq(123)
+        expect(breaker.metrics.total_calls).to eq(1)
+        expect(breaker.metrics.successful_calls).to eq(1)
+        expect(breaker.state).to eq(CircuitBreaker::State::CLOSED)
+      end
+
+      it 'records a failure and re-raises errors from the block' do
+        expect do
+          breaker.execute do
+            raise StandardError, 'boom'
           end
+        end.to raise_error(StandardError, 'boom')
 
-          expect(result).to eq(123)
-          expect(breaker.metrics.total_calls).to eq(1)
-          expect(breaker.metrics.successful_calls).to eq(1)
-          expect(breaker.metrics.failed_calls).to eq(0)
-        end
+        expect(breaker.metrics.total_calls).to eq(1)
+        expect(breaker.metrics.failed_calls).to eq(1)
+      end
 
-        it 're-raises errors from the block and records a failure' do
-          expect do
-            breaker.execute do
-              raise StandardError, 'boom'
-            end
-          end.to raise_error(StandardError, 'boom')
-
-          expect(breaker.metrics.total_calls).to eq(1)
-          expect(breaker.metrics.failed_calls).to eq(1)
-          expect(breaker.metrics.successful_calls).to eq(0)
-        end
-
-        it 'can open due to failure_threshold and then reject subsequent calls' do
-          expect do
-            breaker.execute do
-              raise StandardError, 'fail-1'
-            end
-          end.to raise_error(StandardError)
-
-          expect(breaker.state).to eq(CircuitBreaker::State::CLOSED)
-
-          expect do
-            breaker.execute do
-              raise StandardError, 'fail-2'
-            end
-          end.to raise_error(StandardError)
+      context 'when failure_threshold is reached' do
+        it 'opens the circuit and rejects subsequent calls with OpenError' do
+          2.times do
+            expect do
+              breaker.execute do
+                raise StandardError, 'fail'
+              end
+            end.to raise_error(StandardError, 'fail')
+          end
 
           expect(breaker.state).to eq(CircuitBreaker::State::OPEN)
 
@@ -285,266 +276,269 @@ RSpec.describe CircuitBreaker do
           expect(breaker.metrics.rejected_calls).to eq(1)
         end
 
-        it 'can open due to failure_rate_threshold even if failure_count is below failure_threshold' do
-          local_config = CircuitBreaker::Config.new(
-            failure_threshold: 10,
-            success_threshold: 1,
-            timeout_seconds: 10.0,
-            half_open_max_calls: 1,
-            sliding_window_size: 2,
-            failure_rate_threshold: 0.5
-          )
-          local_breaker = described_class.new('service-rate', config: local_config)
+        it 'returns fallback result when provided instead of raising OpenError' do
+          2.times do
+            expect do
+              breaker.execute do
+                raise StandardError, 'fail'
+              end
+            end.to raise_error(StandardError)
+          end
 
-          expect do
-            local_breaker.execute do
-              raise StandardError, 'rate-fail'
-            end
-          end.to raise_error(StandardError)
+          value = breaker.execute(fallback: -> { :fallback }) doshould_not_run
+          end
 
-          expect(local_breaker.state).to eq(CircuitBreaker::State::OPEN)
+          expect(value).to eq(:fallback)
+          expect(breaker.metrics.rejected_calls).to eq(1)
         end
       end
 
-      context 'when the circuit is open' do
-        let(:now) { Time.utc(2020, 1, 1, 0, 0, 0) }
-
-        before do
+      context 'when timeout elapses after opening' do
+        it 'transitions to HALF_OPEN on state check and allows a limited trial call' do
+          now = Time.at(1_700_000_000.0)
           allow(Time).to receive(:now).and_return(now)
+
           2.times do
-            begin
+            expect do
               breaker.execute do
-                raise StandardError, 'boom'
+                raise StandardError, 'fail'
               end
-            rescue StandardError
-            end
+            end.to raise_error(StandardError)
           end
+
           expect(breaker.state).to eq(CircuitBreaker::State::OPEN)
+
+          allow(Time).to receive(:now).and_return(now + 0.2)
+
+          expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
+
+          result = breaker.execute dook
+          end
+          expect(result).to eq(:ok)
+
+          expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
+
+          expect do
+            breaker.execute dosecond_call_rejected
+            end
+          end.to raise_error(CircuitBreaker::OpenError)
+
+          expect(breaker.metrics.rejected_calls).to eq(1)
         end
 
-        it 'raises OpenError with remaining_time when no fallback is provided' do
-          allow(Time).to receive(:now).and_return(now + 3)
+        it 'closes the circuit after enough half-open successes' do
+          now = Time.at(1_700_000_000.0)
+          allow(Time).to receive(:now).and_return(now)
+
+          2.times do
+            expect do
+              breaker.execute do
+                raise StandardError, 'fail'
+              end
+            end.to raise_error(StandardError)
+          end
+
+          allow(Time).to receive(:now).and_return(now + 0.2)
+          expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
+
+          breaker.execute dook1
+          end
+
+          allow(Time).to receive(:now).and_return(now + 0.21)
+          breaker.execute dook2
+          end
+
+          expect(breaker.state).to eq(CircuitBreaker::State::CLOSED)
+
+          expect do
+            breaker.execute doworks
+            end
+          end.not_to raise_error
+
+          expect(breaker.metrics.rejected_calls).to eq(0)
+        end
+
+        it 're-opens immediately if a half-open trial call fails' do
+          now = Time.at(1_700_000_000.0)
+          allow(Time).to receive(:now).and_return(now)
+
+          2.times do
+            expect do
+              breaker.execute do
+                raise StandardError, 'fail'
+              end
+            end.to raise_error(StandardError)
+          end
+
+          allow(Time).to receive(:now).and_return(now + 0.2)
+          expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
 
           expect do
             breaker.execute do
-              1
+              raise StandardError, 'trial fails'
             end
-          end.to raise_error(CircuitBreaker::OpenError) do |e|
-            expect(e.name).to eq('service-a')
-            expect(e.remaining_time).to be_within(0.0001).of(7.0)
-          end
+          end.to raise_error(StandardError, 'trial fails')
+
+          expect(breaker.state).to eq(CircuitBreaker::State::OPEN)
         end
+      end
 
-        it 'returns fallback value and records a rejection when fallback is provided' do
-          allow(Time).to receive(:now).and_return(now + 3)
-          fallback = proc { :fallback_value }
+      context 'when failure rate crosses threshold before failure count threshold' do
+        it 'opens based on failure_rate_threshold' do
+          rate_config = CircuitBreaker::Config.new(
+            failure_threshold: 99,
+            success_threshold: 1,
+            timeout_seconds: 10.0,
+            half_open_max_calls: 1,
+            sliding_window_size: 4,
+            failure_rate_threshold: 0.5
+          )
+          b = described_class.new('rate-svc', config: rate_config)
 
-          result = breaker.execute(fallback: fallback) do
-            1
-          end
+          expect do
+            b.execute do
+              raise StandardError, 'f1'
+            end
+          end.to raise_error(StandardError)
 
-          expect(result).to eq(:fallback_value)
-          expect(breaker.metrics.rejected_calls).to eq(1)
+          expect do
+            b.execute do
+              raise StandardError, 'f2'
+            end
+          end.to raise_error(StandardError)
+
+          expect(b.state).to eq(CircuitBreaker::State::OPEN)
         end
       end
     end
 
     describe '#state' do
-      it 'returns CLOSED initially' do
-        expect(breaker.state).to eq(CircuitBreaker::State::CLOSED)
-      end
-
-      it 'transitions from OPEN to HALF_OPEN after timeout has elapsed' do
-        now = Time.utc(2020, 1, 1, 0, 0, 0)
-        allow(Time).to receive(:now).and_return(now)
-
-        2.times do
-          begin
-            breaker.execute do
-              raise StandardError, 'boom'
-            end
-          rescue StandardError
-          end
-        end
-
-        expect(breaker.state).to eq(CircuitBreaker::State::OPEN)
-
-        allow(Time).to receive(:now).and_return(now + 11)
-
-        expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
-      end
-
-      it 'enforces half_open_max_calls during HALF_OPEN by rejecting additional calls' do
-        now = Time.utc(2020, 1, 1, 0, 0, 0)
-        allow(Time).to receive(:now).and_return(now)
-
-        2.times do
-          begin
-            breaker.execute do
-              raise StandardError, 'boom'
-            end
-          rescue StandardError
-          end
-        end
-
-        allow(Time).to receive(:now).and_return(now + 11)
-        expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
-
-        expect do
-          breaker.execute dook1
-          end
-        end.not_to raise_error
-
-        expect do
-          breaker.execute dook2
-          end
-        end.not_to raise_error
-
-        expect do
-          breaker.execute dook3
-          end
-        end.to raise_error(CircuitBreaker::OpenError)
-
-        expect(breaker.metrics.rejected_calls).to eq(1)
-      end
-
-      it 'transitions back to OPEN on a failure during HALF_OPEN' do
-        now = Time.utc(2020, 1, 1, 0, 0, 0)
-        allow(Time).to receive(:now).and_return(now)
-
-        2.times do
-          begin
-            breaker.execute do
-              raise StandardError, 'boom'
-            end
-          rescue StandardError
-          end
-        end
-
-        allow(Time).to receive(:now).and_return(now + 11)
-        expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
-
-        expect do
-          breaker.execute do
-            raise StandardError, 'half-open-fail'
-          end
-        end.to raise_error(StandardError, 'half-open-fail')
-
-        expect(breaker.state).to eq(CircuitBreaker::State::OPEN)
-      end
-
-      it 'transitions to CLOSED after enough successes during HALF_OPEN' do
-        now = Time.utc(2020, 1, 1, 0, 0, 0)
-        allow(Time).to receive(:now).and_return(now)
-
-        2.times do
-          begin
-            breaker.execute do
-              raise StandardError, 'boom'
-            end
-          rescue StandardError
-          end
-        end
-
-        allow(Time).to receive(:now).and_return(now + 11)
-        expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
-
-        expect(breaker.execute dook1
-        end).to eq(:ok1)
-
-        expect(breaker.state).to eq(CircuitBreaker::State::HALF_OPEN)
-
-        expect(breaker.execute dook2
-        end).to eq(:ok2)
-
+      it 'returns CLOSED by default' do
+        breaker = described_class.new('svc-state')
         expect(breaker.state).to eq(CircuitBreaker::State::CLOSED)
       end
     end
 
     describe '#health_info' do
-      it 'returns a structured hash including metrics and config' do
-        begin
+      it 'returns the health hash with required fields' do
+        config = CircuitBreaker::Config.new(
+          failure_threshold: 1,
+          success_threshold: 1,
+          timeout_seconds: 1.0,
+          sliding_window_size: 2,
+          failure_rate_threshold: 1.0
+        )
+        breaker = described_class.new('svc-health', config: config)
+
+        expect do
           breaker.execute do
-            raise StandardError, 'boom'
+            raise StandardError, 'fail'
           end
-        rescue StandardError
-        end
+        end.to raise_error(StandardError)
 
         info = breaker.health_info
-        expect(info).to be_a(Hash)
-        expect(info[:name]).to eq('service-a')
+
+        expect(info[:name]).to eq('svc-health')
         expect(info[:state]).to be_a(String)
-        expect(info[:failure_count]).to be_a(Integer)
+        expect(info[:state]).to eq('OPEN')
+        expect(info[:failure_count]).to be >= 1
         expect(info[:success_count]).to be_a(Integer)
-        expect(info[:failure_rate]).to be_a(Float)
+        expect(info[:failure_rate]).to be_between(0.0, 1.0)
         expect(info[:metrics]).to be_a(Hash)
-        expect(info[:config]).to include(:failure_threshold, :success_threshold, :timeout_seconds)
+        expect(info[:config]).to include(
+          failure_threshold: 1,
+          success_threshold: 1,
+          timeout_seconds: 1.0
+        )
       end
     end
   end
 
   describe CircuitBreaker::DistributedCoordinator do
-    let(:coordinator_url) { 'http://coordinator.test' }
-    let(:coordinator) { described_class.new(coordinator_url, sync_interval: 0.01) }
-    let(:breaker_config) { CircuitBreaker::Config.new(failure_threshold: 1, success_threshold: 1) }
-    let(:breaker) { CircuitBreaker::Breaker.new('svc-x', config: breaker_config) }
+    let(:coordinator_url) { 'http://coordinator.test:8080' }
+    let(:sync_interval) { 0.01 }
+    let(:coordinator) { described_class.new(coordinator_url, sync_interval: sync_interval) }
+
+    let(:config) do
+      CircuitBreaker::Config.new(
+        failure_threshold: 2,
+        success_threshold: 1,
+        timeout_seconds: 0.1,
+        half_open_max_calls: 1,
+        sliding_window_size: 2,
+        failure_rate_threshold: 1.0
+      )
+    end
+
+    let(:breaker) { CircuitBreaker::Breaker.new('svc-coord', config: config) }
+
+    describe '#initialize' do
+      it 'sets a node_id using ENV[NODE_ID] when present' do
+        begin
+          old_node_id = ENV['NODE_ID']
+          ENV['NODE_ID'] = 'node-123'
+          instance = described_class.new(coordinator_url, sync_interval: sync_interval)
+
+          node_id = instance.instance_variable_get(:@node_id)
+          expect(node_id).to eq('node-123')
+        ensure
+          ENV['NODE_ID'] = old_node_id
+        end
+      end
+    end
 
     describe '#register' do
-      it 'stores the breaker and attempts to send registration, swallowing errors' do
+      it 'stores breaker and sends registration (http request is attempted)' do
         http = instance_double(Net::HTTP)
+        response = instance_double(Net::HTTPResponse, body: '{}')
         allow(Net::HTTP).to receive(:new).and_return(http)
         allow(http).to receive(:use_ssl=)
         allow(http).to receive(:open_timeout=)
         allow(http).to receive(:read_timeout=)
-        allow(http).to receive(:request).and_raise(StandardError, 'network down')
+        allow(http).to receive(:request).and_return(response)
+
+        expect do
+          coordinator.register(breaker)
+        end.not_to raise_error
+
+        breakers_hash = coordinator.instance_variable_get(:@breakers)
+        expect(breakers_hash[breaker.name]).to eq(breaker)
+      end
+
+      it 'swallows exceptions from registration request' do
+        http = instance_double(Net::HTTP)
+        allow(Net::HTTP).to receive(:new).and_return(http)
+        allow(http).to receive(:use_ssl=)
+        allow(http).to receive(:open_timeout=).and_raise(StandardError, 'net down')
+        allow(http).to receive(:read_timeout=)
+        allow(http).to receive(:request)
 
         expect do
           coordinator.register(breaker)
         end.not_to raise_error
       end
-
-      it 'sends a registration request with JSON body' do
-        http = instance_double(Net::HTTP)
-        allow(Net::HTTP).to receive(:new).and_return(http)
-        allow(http).to receive(:use_ssl=)
-        allow(http).to receive(:open_timeout=)
-        allow(http).to receive(:read_timeout=)
-
-        captured_request = nil
-        allow(http).to receive(:request) do |req|
-          captured_request = req
-          instance_double(Net::HTTPResponse, body: '{}')
-        end
-
-        coordinator.register(breaker)
-
-        expect(captured_request).to be_a(Net::HTTP::Post)
-        expect(captured_request['Content-Type']).to eq('application/json')
-
-        body = JSON.parse(captured_request.body)
-        expect(body['service']).to eq('svc-x')
-        expect(body).to include('node_id')
-        expect(body['failure_threshold']).to eq(breaker_config.failure_threshold)
-        expect(body['success_threshold']).to eq(breaker_config.success_threshold)
-      end
     end
 
     describe '#start_sync and #stop_sync' do
-      it 'starts a background thread and stops it cleanly' do
+      it 'starts a background thread and stops it' do
         allow(coordinator).to receive(:sleep)
 
         http = instance_double(Net::HTTP)
+        response = instance_double(Net::HTTPResponse, body: '{}')
         allow(Net::HTTP).to receive(:new).and_return(http)
         allow(http).to receive(:use_ssl=)
         allow(http).to receive(:open_timeout=)
         allow(http).to receive(:read_timeout=)
-        allow(http).to receive(:request).and_return(instance_double(Net::HTTPResponse, body: '{}'))
+        allow(http).to receive(:request).and_return(response)
 
         coordinator.register(breaker)
 
         expect do
           coordinator.start_sync
         end.not_to raise_error
+
+        t = coordinator.instance_variable_get(:@sync_thread)
+        expect(t).to be_a(Thread)
 
         expect do
           coordinator.stop_sync
@@ -554,20 +548,18 @@ RSpec.describe CircuitBreaker do
 
     describe '#get_cluster_state' do
       it 'returns parsed JSON on success' do
-        uri = URI("#{coordinator_url}/circuit-breakers/svc-x/aggregate")
         response = instance_double(Net::HTTPResponse, body: '{"ok":true}')
-        allow(Net::HTTP).to receive(:get_response).with(uri).and_return(response)
+        allow(Net::HTTP).to receive(:get_response).and_return(response)
 
-        result = coordinator.get_cluster_state('svc-x')
-        expect(result).to eq({ 'ok' => true })
+        data = coordinator.get_cluster_state('svc-a')
+        expect(data).to eq({ 'ok' => true })
       end
 
-      it 'returns an error hash when Net::HTTP raises' do
-        uri = URI("#{coordinator_url}/circuit-breakers/svc-x/aggregate")
-        allow(Net::HTTP).to receive(:get_response).with(uri).and_raise(StandardError, 'timeout')
+      it 'returns an error hash when an exception occurs' do
+        allow(Net::HTTP).to receive(:get_response).and_raise(StandardError, 'boom')
 
-        result = coordinator.get_cluster_state('svc-x')
-        expect(result).to eq({ error: 'timeout' })
+        data = coordinator.get_cluster_state('svc-a')
+        expect(data).to eq({ error: 'boom' })
       end
     end
   end

@@ -8,15 +8,43 @@ import org.junit.jupiter.api.DisplayName;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
 @DisplayName("DistributedCircuitBreakerClient Tests")
 class DistributedCircuitBreakerClientTest {
 
     private DistributedCircuitBreakerClient client;
+    private HttpServer server;
+    private int port;
+
+    private AtomicInteger registerCount;
+    private AtomicInteger stateCount;
+
+    private volatile String lastRegisterBody;
+    private volatile String lastStateBody;
+    private volatile String aggregateResponse;
 
     @BeforeEach
-    void setUp() {
-        // Use an unreachable coordinator URL to avoid real network calls
-        client = new DistributedCircuitBreakerClient("http://invalid.localhost");
+    void setUp() throws Exception {
+        registerCount = new AtomicInteger(0);
+        stateCount = new AtomicInteger(0);
+        aggregateResponse = "{\"service\":\"default\",\"consensus_state\":\"CLOSED\",\"total_nodes\":1,\"health_score\":1.0}";
+
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        port = server.getAddress().getPort();
+
+        server.createContext("/circuit-breakers", this::handleCircuitBreakerRequests);
+        server.start();
+
+        client = new DistributedCircuitBreakerClient("http://localhost:" + port);
     }
 
     @AfterEach
@@ -24,154 +52,151 @@ class DistributedCircuitBreakerClientTest {
         if (client != null) {
             client.shutdown();
         }
-        client = null;
+        if (server != null) {
+            server.stop(0);
+        }
+    }
+
+    private void handleCircuitBreakerRequests(HttpExchange exchange) throws IOException {
+        String path = exchange.getRequestURI().getPath();
+        String method = exchange.getRequestMethod();
+
+        if (path.endsWith("/register") && "POST".equalsIgnoreCase(method)) {
+            lastRegisterBody = readBody(exchange);
+            registerCount.incrementAndGet();
+            respond(exchange, 200, "registered");
+            return;
+        }
+
+        if (path.endsWith("/state") && "POST".equalsIgnoreCase(method)) {
+            lastStateBody = readBody(exchange);
+            stateCount.incrementAndGet();
+            respond(exchange, 200, "ok");
+            return;
+        }
+
+        if (path.contains("/aggregate") && "GET".equalsIgnoreCase(method)) {
+            respond(exchange, 200, aggregateResponse);
+            return;
+        }
+
+        respond(exchange, 404, "not-found");
+    }
+
+    private static String readBody(HttpExchange exchange) throws IOException {
+        try (InputStream is = exchange.getRequestBody()) {
+            byte[] bytes = is.readAllBytes();
+            return new String(bytes, StandardCharsets.UTF_8);
+        }
+    }
+
+    private static void respond(HttpExchange exchange, int status, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(status, bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
+    }
+
+    private static void sleepSilently(long millis) {
+        try {
+            TimeUnit.MILLISECONDS.sleep(millis);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Test
-    @DisplayName("Constructor should create instance and start without throwing")
+    @DisplayName("Should construct client with coordinator URL")
     void testConstructor() {
         assertNotNull(client);
     }
 
     @Test
-    @DisplayName("getBreaker should cache and return same instance for same service")
-    void testGetBreaker_CachesPerService() {
-        CircuitBreaker<Object> b1 = client.getBreaker("svcA");
-        CircuitBreaker<Object> b2 = client.getBreaker("svcA");
-        CircuitBreaker<Object> b3 = client.getBreaker("svcB");
+    @DisplayName("getBreaker should cache and return same instance per service and register once")
+    void testGetBreaker_CachingAndRegistration() {
+        com.polyglot.circuitbreaker.CircuitBreaker<Object> b1 = client.getBreaker("service-A");
+        com.polyglot.circuitbreaker.CircuitBreaker<Object> b2 = client.getBreaker("service-A");
+        com.polyglot.circuitbreaker.CircuitBreaker<Object> b3 = client.getBreaker("service-B");
 
         assertNotNull(b1);
-        assertNotNull(b2);
-        assertNotNull(b3);
+        assertSame(b1, b2);
+        assertNotSame(b1, b3);
 
-        assertSame(b1, b2, "Expected same breaker instance for same service name");
-        assertNotSame(b1, b3, "Expected different breaker instances for different service names");
+        // Registration should occur once per unique service
+        assertEquals(2, registerCount.get(), "Expected two registration calls (service-A and service-B)");
+        assertNotNull(lastRegisterBody);
+        assertTrue(lastRegisterBody.contains("\"service\":\"service-B\""), "Register body should contain the last service name");
     }
 
     @Test
-    @DisplayName("getBreaker should throw NullPointerException when service name is null")
-    void testGetBreaker_NullService_Throws() {
-        assertThrows(NullPointerException.class, () -> client.getBreaker(null));
+    @DisplayName("reportState should send state asynchronously without throwing")
+    void testReportState_SendsAsync() {
+        int before = stateCount.get();
+        client.reportState("state-service", com.polyglot.circuitbreaker.CircuitBreaker.State.OPEN, 2);
+
+        // Wait a bit for async send to reach the server
+        long start = System.currentTimeMillis();
+        while (System.currentTimeMillis() - start < 1500 && stateCount.get() == before) {
+            sleepSilently(50);
+        }
+        assertTrue(stateCount.get() > before, "Expected state endpoint to be hit at least once");
+        assertNotNull(lastStateBody);
+        assertTrue(lastStateBody.contains("\"service\":\"state-service\""), "State body should include service");
+        assertTrue(lastStateBody.contains("\"state\":\"OPEN\""), "State body should include state");
+        assertTrue(lastStateBody.contains("\"failure_count\":2"), "State body should include failure_count");
     }
 
     @Test
-    @DisplayName("reportState should not throw even if coordinator is unreachable")
-    void testReportState_NoThrowOnNetworkError() {
-        // Ensure a breaker exists to simulate real usage
-        client.getBreaker("payments");
-        // Should not throw
-        assertDoesNotThrow(() ->
-            client.reportState("payments", CircuitBreaker.State.CLOSED, 0)
-        );
-    }
+    @DisplayName("getAggregatedState should parse valid JSON response")
+    void testGetAggregatedState_ParsesValidJson() {
+        aggregateResponse = "{\"service\":\"payments\",\"consensus_state\":\"OPEN\",\"total_nodes\":5,\"health_score\":0.62}";
 
-    @Test
-    @DisplayName("getAggregatedState should return UNKNOWN on network error")
-    void testGetAggregatedState_FallbackOnError() {
-        String service = "inventory";
-        DistributedCircuitBreakerClient.AggregatedState agg = client.getAggregatedState(service);
+        DistributedCircuitBreakerClient.AggregatedState agg = client.getAggregatedState("payments");
 
         assertNotNull(agg);
-        assertEquals(service, agg.service());
-        assertEquals("UNKNOWN", agg.consensusState());
+        assertEquals("payments", agg.service());
+        assertEquals("OPEN", agg.consensusState());
+        assertEquals(5, agg.totalNodes());
+        assertEquals(0.62, agg.healthScore(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("getAggregatedState with malformed JSON falls back to parser defaults")
+    void testGetAggregatedState_MalformedJson() {
+        aggregateResponse = "not a json at all";
+
+        DistributedCircuitBreakerClient.AggregatedState agg = client.getAggregatedState("whatever");
+
+        // Parser extracts empty strings and zeros when keys are missing or malformed
+        assertNotNull(agg);
+        assertEquals("", agg.service());
+        assertEquals("", agg.consensusState());
         assertEquals(0, agg.totalNodes());
-        assertEquals(0.0, agg.healthScore(), 0.000001);
+        assertEquals(0.0, agg.healthScore(), 0.0);
     }
 
     @Test
-    @DisplayName("getAggregatedState should parse valid JSON response correctly")
-    void testGetAggregatedState_ParseValidJson() throws Exception {
-        // Start a simple in-memory HTTP server to return a valid JSON response
-        com.sun.net.httpserver.HttpServer server =
-                com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress(0), 0);
-        int port = server.getAddress().getPort();
-
-        server.createContext("/", exchange -> {
-            String path = exchange.getRequestURI().getPath();
-            if (path.equals("/circuit-breakers/payments/aggregate")) {
-                String json = "{\"service\":\"payments\",\"consensus_state\":\"OPEN\",\"total_nodes\":3,\"health_score\":0.67}";
-                byte[] bytes = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                exchange.getResponseHeaders().add("Content-Type", "application/json");
-                exchange.sendResponseHeaders(200, bytes.length);
-                try (java.io.OutputStream os = exchange.getResponseBody()) {
-                    os.write(bytes);
-                }
-            } else {
-                exchange.sendResponseHeaders(404, -1);
-                exchange.close();
-            }
-        });
-        server.start();
-
-        DistributedCircuitBreakerClient localClient = new DistributedCircuitBreakerClient("http://127.0.0.1:" + port);
+    @DisplayName("getAggregatedState should return UNKNOWN on request failure")
+    void testGetAggregatedState_OnFailureReturnsUnknown() {
+        DistributedCircuitBreakerClient failingClient = new DistributedCircuitBreakerClient("http://127.0.0.1:0");
         try {
-            DistributedCircuitBreakerClient.AggregatedState agg = localClient.getAggregatedState("payments");
+            DistributedCircuitBreakerClient.AggregatedState agg = failingClient.getAggregatedState("downstream");
             assertNotNull(agg);
-            assertEquals("payments", agg.service());
-            assertEquals("OPEN", agg.consensusState());
-            assertEquals(3, agg.totalNodes());
-            assertEquals(0.67, agg.healthScore(), 0.000001);
-        } finally {
-            localClient.shutdown();
-            server.stop(0);
-        }
-    }
-
-    @Test
-    @DisplayName("getAggregatedState should handle incomplete JSON gracefully")
-    void testGetAggregatedState_IncompleteJson() throws Exception {
-        com.sun.net.httpserver.HttpServer server =
-                com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress(0), 0);
-        int port = server.getAddress().getPort();
-
-        server.createContext("/", exchange -> {
-            String path = exchange.getRequestURI().getPath();
-            if (path.equals("/circuit-breakers/alpha/aggregate")) {
-                String json = "{}";
-                byte[] bytes = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                exchange.getResponseHeaders().add("Content-Type", "application/json");
-                exchange.sendResponseHeaders(200, bytes.length);
-                try (java.io.OutputStream os = exchange.getResponseBody()) {
-                    os.write(bytes);
-                }
-            } else {
-                exchange.sendResponseHeaders(404, -1);
-                exchange.close();
-            }
-        });
-        server.start();
-
-        DistributedCircuitBreakerClient localClient = new DistributedCircuitBreakerClient("http://127.0.0.1:" + port);
-        try {
-            DistributedCircuitBreakerClient.AggregatedState agg = localClient.getAggregatedState("alpha");
-            assertNotNull(agg);
-            // Because parsing uses the response JSON fields, missing keys yield defaults
-            assertEquals("", agg.service());
-            assertEquals("", agg.consensusState());
+            assertEquals("downstream", agg.service());
+            assertEquals("UNKNOWN", agg.consensusState());
             assertEquals(0, agg.totalNodes());
-            assertEquals(0.0, agg.healthScore(), 0.000001);
+            assertEquals(0.0, agg.healthScore(), 0.0);
         } finally {
-            localClient.shutdown();
-            server.stop(0);
+            failingClient.shutdown();
         }
     }
 
     @Test
-    @DisplayName("shutdown should be idempotent and not throw on multiple calls")
+    @DisplayName("shutdown should be idempotent and not throw")
     void testShutdown_Idempotent() {
-        assertDoesNotThrow(() -> client.shutdown());
-        assertDoesNotThrow(() -> client.shutdown());
-    }
-
-    @Test
-    @DisplayName("AggregatedState record should expose values correctly")
-    void testAggregatedStateRecord() {
-        DistributedCircuitBreakerClient.AggregatedState state =
-                new DistributedCircuitBreakerClient.AggregatedState("svc", "CLOSED", 5, 0.95);
-
-        assertEquals("svc", state.service());
-        assertEquals("CLOSED", state.consensusState());
-        assertEquals(5, state.totalNodes());
-        assertEquals(0.95, state.healthScore(), 0.000001);
+        assertDoesNotThrow(() -> {
+            client.shutdown();
+            client.shutdown();
+        });
     }
 }

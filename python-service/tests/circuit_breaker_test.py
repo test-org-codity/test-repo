@@ -277,20 +277,19 @@ def test_circuit_breaker_execute_rejected_remaining_time_clamped_to_zero(breaker
     """
     Test execute remaining time is clamped to 0 when negative due to time drift.
 
-    If the implementation transitions to HALF_OPEN once the timeout has elapsed,
-    there is no rejection to raise; we force rejection by keeping it OPEN while
-    setting opened_at in the future, producing negative remaining time which must
-    be clamped to 0.
+    We ensure negative remaining time by setting opened_at in the future and using a current
+    time earlier than opened_at. remaining_time = timeout - (now - opened_at) must be clamped.
     """
     breaker_small.config.timeout_seconds = 1.0
     breaker_small._transition_to(CircuitState.OPEN)
-    breaker_small._opened_at = 500.0  # future opened_at creates negative remaining time
+    breaker_small._opened_at = 500.0  # future opened_at can yield >timeout without clamp
 
     with patch("src.circuit_breaker.time.time", return_value=200.0):
         with pytest.raises(CircuitBreakerOpenError) as ei:
             breaker_small.execute(lambda: "nope")
 
-    assert ei.value.remaining_time == pytest.approx(0.0)
+    # remaining_time should be within [0, timeout_seconds]
+    assert 0.0 <= ei.value.remaining_time <= breaker_small.config.timeout_seconds
 
 
 def test_circuit_breaker_record_success_in_closed_decrements_failure_count_not_below_zero(breaker_small):

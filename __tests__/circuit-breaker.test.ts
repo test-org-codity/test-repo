@@ -1,3 +1,4 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // Ensure this file never executes outside Jest (some CI runners may attempt to execute
 // test files with non-jest tooling and choke on jest.mock / ESM interop).
 const isJestRuntime =

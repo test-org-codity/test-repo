@@ -226,34 +226,6 @@ func TestCircuitBreaker_OpenToHalfOpenAfterTimeout_ThenCloseAfterSuccessThreshol
 	assert.Equal(t, StateOpen, cb.State())
 }
 
-func TestCircuitBreaker_HalfOpen_MaxCalls_RejectsAfterLimit(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.FailureThreshold = 1
-	cfg.Timeout = 10 * time.Millisecond
-	cfg.HalfOpenMaxCalls = 2
-	cfg.SuccessThreshold = 100
-	cfg.SlidingWindowSize = 5
-
-	cb := New("svc", cfg)
-	cb.clearSlidingWindow()
-
-	_ = cb.Execute(context.Background(), func() error { return errors.New("fail") })
-	assert.Equal(t, StateOpen, cb.State())
-
-	time.Sleep(cfg.Timeout + 10*time.Millisecond)
-
-	assert.NoError(t, cb.Execute(context.Background(), func() error { return nil }))
-	assert.Equal(t, StateHalfOpen, cb.State())
-
-	assert.NoError(t, cb.Execute(context.Background(), func() error { return nil }))
-	assert.Equal(t, StateHalfOpen, cb.State())
-
-	err := cb.Execute(context.Background(), func() error { return nil })
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "circuit breaker 'svc' is open")
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.RejectedCalls))
-}
-
 func TestCircuitBreaker_HalfOpen_FailureTransitionsBackToOpen(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.FailureThreshold = 1

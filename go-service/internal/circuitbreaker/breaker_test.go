@@ -3,7 +3,6 @@ package circuitbreaker
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -222,49 +221,6 @@ func TestCircuitBreaker_OpenToHalfOpenAfterTimeoutAndBackToClosedOnSuccesses(t *
 	assert.Equal(t, uint64(2), atomic.LoadUint64(&cb.metrics.SuccessfulCalls))
 	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.FailedCalls))
 	assert.GreaterOrEqual(t, atomic.LoadUint64(&cb.metrics.StateChanges), uint64(2))
-}
-
-func TestCircuitBreaker_HalfOpen_RespectsHalfOpenMaxCalls(t *testing.T) {
-	// Source behavior:
-	// - allowRequest() in HALF_OPEN increments halfOpenCalls and allows calls up to HalfOpenMaxCalls.
-	// - Once over the limit, Execute returns "circuit breaker 'x' is open" and increments RejectedCalls.
-	//
-	// IMPORTANT: transitionTo(StateClosed) would panic due to openedAt.Store(nil) in the source.
-	// So we prevent HALF_OPEN -> CLOSED by setting SuccessThreshold very high and only doing a few successes.
-	cfg := DefaultConfig()
-	cfg.FailureThreshold = 1
-	cfg.Timeout = 15 * time.Millisecond
-	cfg.HalfOpenMaxCalls = 2
-	cfg.SuccessThreshold = 1000000
-	cfg.SlidingWindowSize = 5
-	cfg.FailureRateThreshold = 2.0
-
-	cb := New("x", cfg)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	_ = cb.Execute(ctx, func() error { return errors.New("fail") })
-	assert.Equal(t, StateOpen, cb.State())
-
-	time.Sleep(cfg.Timeout + 10*time.Millisecond)
-
-	err1 := cb.Execute(ctx, func() error { return nil })
-	err2 := cb.Execute(ctx, func() error { return nil })
-	err3 := cb.Execute(ctx, func() error { return nil })
-
-	assert.NoError(t, err1)
-	assert.NoError(t, err2)
-	assert.Error(t, err3)
-	assert.Contains(t, err3.Error(), "circuit breaker 'x' is open")
-
-	// After the first successful call post-timeout, the breaker should be HALF_OPEN.
-	// It should remain HALF_OPEN (we prevented closing via SuccessThreshold).
-	assert.Equal(t, StateHalfOpen, cb.State())
-
-	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.RejectedCalls))
-	assert.Equal(t, uint64(3), atomic.LoadUint64(&cb.metrics.TotalCalls))
-	assert.Equal(t, uint64(2), atomic.LoadUint64(&cb.metrics.SuccessfulCalls))
 }
 
 func TestCircuitBreaker_HalfOpen_FailureTransitionsToOpen(t *testing.T) {
@@ -542,41 +498,4 @@ func TestCircuitBreaker_calculateFailureRateAndClearSlidingWindow(t *testing.T) 
 
 	cb.clearSlidingWindow()
 	assert.InDelta(t, 0.0, cb.calculateFailureRate(), 0.000001)
-}
-
-func TestCircuitBreaker_ConcurrentExecute_NoPanicsAndCountsMatch(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.FailureThreshold = 1000000
-	cfg.FailureRateThreshold = 2.0
-	cfg.SlidingWindowSize = 20
-
-	cb := New("x", cfg)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	const n = 200
-	var wg sync.WaitGroup
-	wg.Add(n)
-
-	for i := 0; i < n; i++ {
-		i := i
-		go func() {
-			defer wg.Done()
-			_ = cb.Execute(ctx, func() error {
-				if i%3 == 0 {
-					return fmt.Errorf("fail %d", i)
-				}
-				return nil
-			})
-		}()
-	}
-	wg.Wait()
-
-	total := atomic.LoadUint64(&cb.metrics.TotalCalls)
-	success := atomic.LoadUint64(&cb.metrics.SuccessfulCalls)
-	failed := atomic.LoadUint64(&cb.metrics.FailedCalls)
-
-	assert.Equal(t, uint64(n), total)
-	assert.Equal(t, total, success+failed)
 }

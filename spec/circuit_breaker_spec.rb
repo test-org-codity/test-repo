@@ -1,4 +1,3 @@
-require 'net/http'
 require 'rspec'
 
 RSpec.describe Net::HTTP do

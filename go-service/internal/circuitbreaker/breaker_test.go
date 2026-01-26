@@ -217,9 +217,13 @@ func TestCircuitBreaker_HalfOpen_MaxCallsRejectsExcess(t *testing.T) {
 	cfg.Timeout = 1 * time.Millisecond
 	cfg.HalfOpenMaxCalls = 2
 	cfg.SuccessThreshold = 100 // avoid closing
+	cfg.FailureThreshold = 100
+	cfg.FailureRateThreshold = 2.0 // disable failure-rate opening (rate is in [0..1])
 
 	cb := New("svc", cfg)
-	cb.transitionTo(StateOpen)
+
+	// Put breaker into open state without using transitionTo(StateOpen) to avoid later nil store panics.
+	atomic.StoreInt32(&cb.state, int32(StateOpen))
 	cb.openedAt.Store(time.Now().Add(-cfg.Timeout - 10*time.Millisecond))
 
 	// first allowed will transition to half-open and consume one call
@@ -230,7 +234,7 @@ func TestCircuitBreaker_HalfOpen_MaxCallsRejectsExcess(t *testing.T) {
 	err2 := cb.Execute(context.Background(), func() error { return nil })
 	require.NoError(t, err2)
 
-	// third should be rejected
+	// third should be rejected (allowRequest in half-open enforces HalfOpenMaxCalls)
 	err3 := cb.Execute(context.Background(), func() error { return nil })
 	require.Error(t, err3)
 	assert.Contains(t, err3.Error(), "is open")
@@ -323,16 +327,12 @@ func TestCircuitBreaker_Closed_FailureRateThresholdOpens(t *testing.T) {
 }
 
 func TestCircuitBreaker_ExecuteWithFallback(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.FailureThreshold = 1
-	cfg.FailureRateThreshold = 1.0
-
-	cb := New("svc", cfg)
-
-	primaryErr := fmt.Errorf("primary failed")
-	fallbackErr := fmt.Errorf("fallback failed")
-
 	t.Run("primary success no fallback", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.FailureThreshold = 100
+		cfg.FailureRateThreshold = 2.0
+		cb := New("svc", cfg)
+
 		err := cb.ExecuteWithFallback(context.Background(), func() error { return nil }, func() error {
 			t.Fatalf("fallback should not be called")
 			return nil
@@ -341,7 +341,14 @@ func TestCircuitBreaker_ExecuteWithFallback(t *testing.T) {
 	})
 
 	t.Run("primary error calls fallback", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.FailureThreshold = 100
+		cfg.FailureRateThreshold = 2.0
+		cb := New("svc", cfg)
+
+		primaryErr := fmt.Errorf("primary failed")
 		called := int32(0)
+
 		err := cb.ExecuteWithFallback(context.Background(), func() error { return primaryErr }, func() error {
 			atomic.AddInt32(&called, 1)
 			return nil
@@ -351,19 +358,25 @@ func TestCircuitBreaker_ExecuteWithFallback(t *testing.T) {
 	})
 
 	t.Run("primary error fallback nil returns primary error", func(t *testing.T) {
-		// Source code behavior: ExecuteWithFallback returns the error from Execute() when fallback is nil.
-		// But Execute() may reject the call if the breaker has opened due to prior failures.
-		// Ensure the breaker is closed and won't open due to failure-rate logic for this subtest.
-		cb.transitionTo(StateClosed)
-		cb.clearSlidingWindow()
-		cb.config.FailureThreshold = 100
-		cb.config.FailureRateThreshold = 2.0
+		cfg := DefaultConfig()
+		cfg.FailureThreshold = 100
+		cfg.FailureRateThreshold = 2.0
+		cb := New("svc", cfg)
 
+		primaryErr := fmt.Errorf("primary failed")
 		err := cb.ExecuteWithFallback(context.Background(), func() error { return primaryErr }, nil)
 		require.ErrorIs(t, err, primaryErr)
 	})
 
 	t.Run("fallback error returned", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.FailureThreshold = 100
+		cfg.FailureRateThreshold = 2.0
+		cb := New("svc", cfg)
+
+		primaryErr := fmt.Errorf("primary failed")
+		fallbackErr := fmt.Errorf("fallback failed")
+
 		err := cb.ExecuteWithFallback(context.Background(), func() error { return primaryErr }, func() error { return fallbackErr })
 		require.ErrorIs(t, err, fallbackErr)
 	})

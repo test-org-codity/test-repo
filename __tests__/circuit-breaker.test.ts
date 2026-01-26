@@ -1,4 +1,4 @@
-const { describe, it, expect, jest, beforeEach, afterEach } = require('@jest/globals')
+const { describe, it, expect, jest, afterEach } = require('@jest/globals')
 
 // Ensure this file never executes outside Jest (some CI runners may attempt to execute
 // test files with non-jest tooling and choke on jest.mock / ESM interop).

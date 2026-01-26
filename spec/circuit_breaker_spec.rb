@@ -1,5 +1,4 @@
-require 'spec_helper'
-require 'circuit_breaker'
+require 'net/http'
 
 RSpec.describe CircuitBreaker::Error do
   it 'inherits from StandardError' do

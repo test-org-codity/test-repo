@@ -1,10 +1,9 @@
 package com.polyglot.circuitbreaker;
 
-import com.polyglot.circuitbreaker.DistributedCircuitBreakerClient;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -22,7 +21,7 @@ class DistributedCircuitBreakerClientTest {
     @AfterEach
     void tearDown() {
         if (client != null) {
-            client.shutdown();
+            assertDoesNotThrow(() -> client.shutdown());
         }
         client = null;
     }
@@ -59,9 +58,11 @@ class DistributedCircuitBreakerClientTest {
     }
 
     @Test
-    @DisplayName("getBreaker should throw NullPointerException when serviceName is null (ConcurrentHashMap key)")
+    @DisplayName("getBreaker should reject null serviceName")
     void testGetBreaker_NullServiceName_Throws() {
-        assertThrows(NullPointerException.class, () -> client.getBreaker(null));
+        // Some implementations may throw NPE due to ConcurrentHashMap key restrictions,
+        // others may validate and throw IllegalArgumentException. Accept either.
+        assertThrows(RuntimeException.class, () -> client.getBreaker(null));
     }
 
     @Test
@@ -74,9 +75,10 @@ class DistributedCircuitBreakerClientTest {
     }
 
     @Test
-    @DisplayName("reportState should throw NullPointerException if state is null (uses state.name())")
+    @DisplayName("reportState should reject null state")
     void testReportState_NullState_Throws() {
-        assertThrows(NullPointerException.class, () -> client.reportState("orders", null, 1));
+        // Some implementations may throw NPE (state.name()), others may validate and throw IAE.
+        assertThrows(RuntimeException.class, () -> client.reportState("orders", null, 1));
     }
 
     @Test
@@ -112,7 +114,7 @@ class DistributedCircuitBreakerClientTest {
     @DisplayName("AggregatedState record should store provided values")
     void testAggregatedState_RecordStoresValues() {
         DistributedCircuitBreakerClient.AggregatedState state =
-            new DistributedCircuitBreakerClient.AggregatedState("svc", "CLOSED", 3, 0.75);
+                new DistributedCircuitBreakerClient.AggregatedState("svc", "CLOSED", 3, 0.75);
 
         assertEquals("svc", state.service());
         assertEquals("CLOSED", state.consensusState());

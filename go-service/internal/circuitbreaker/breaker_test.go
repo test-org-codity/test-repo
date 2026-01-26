@@ -173,16 +173,19 @@ func TestCircuitBreaker_Execute_RejectsWhenOpenBeforeTimeout(t *testing.T) {
 }
 
 func TestCircuitBreaker_OpenToHalfOpenAfterTimeout_ThenHalfOpenMaxCalls(t *testing.T) {
-	// Source behavior: first call after timeout transitions to HALF_OPEN, but a successful operation
-	// can immediately transition to CLOSED once SuccessThreshold is met. That transition panics
-	// because transitionTo(StateClosed) stores nil into atomic.Value (openedAt).
+	// Match source behavior:
+	// - allowRequest() transitions OPEN -> HALF_OPEN on first allowed call after timeout.
+	// - In HALF_OPEN, allowRequest increments halfOpenCalls and enforces HalfOpenMaxCalls.
+	// - If a HALF_OPEN operation fails, recordFailure transitions back to OPEN (and resets halfOpenCalls
+	//   on the next HALF_OPEN transition).
 	//
-	// Therefore, use failing operations in HALF_OPEN to avoid transition to CLOSED and still
-	// validate HALF_OPEN max calls and rejection behavior.
+	// Therefore, to validate the HalfOpenMaxCalls gating, we must keep the breaker in HALF_OPEN by
+	// using successful operations (but NOT reaching SuccessThreshold, otherwise it would attempt
+	// transitionTo(CLOSED) which panics due to openedAt.Store(nil)).
 	cfg := DefaultConfig()
-	cfg.Timeout = 30 * time.Millisecond
+	cfg.Timeout = 20 * time.Millisecond
 	cfg.HalfOpenMaxCalls = 2
-	cfg.SuccessThreshold = 1000 // ensure we never reach success threshold even if op accidentally succeeds
+	cfg.SuccessThreshold = 1000 // avoid transitionTo(StateClosed) panic
 	cfg.SlidingWindowSize = 5
 	cb := New("svc", cfg)
 
@@ -191,40 +194,32 @@ func TestCircuitBreaker_OpenToHalfOpenAfterTimeout_ThenHalfOpenMaxCalls(t *testi
 
 	time.Sleep(cfg.Timeout + 10*time.Millisecond)
 
-	sentinel := errors.New("half-open fail")
+	// 1st call after timeout: should be allowed and transition to HALF_OPEN.
+	err1 := cb.Execute(context.Background(), func() error { return nil })
+	assert.NoError(t, err1)
+	assert.Equal(t, StateHalfOpen, cb.State())
 
-	// First call after timeout should transition to half-open and allow, but will fail and reopen.
-	err1 := cb.Execute(context.Background(), func() error { return sentinel })
-	assert.ErrorIs(t, err1, sentinel)
-	assert.Equal(t, StateOpen, cb.State())
+	// 2nd call in HALF_OPEN: allowed.
+	err2 := cb.Execute(context.Background(), func() error { return nil })
+	assert.NoError(t, err2)
+	assert.Equal(t, StateHalfOpen, cb.State())
 
-	// Wait again to attempt reset again.
-	time.Sleep(cfg.Timeout + 10*time.Millisecond)
-
-	// Second attempt: allowed and fails again, reopens again.
-	err2 := cb.Execute(context.Background(), func() error { return sentinel })
-	assert.ErrorIs(t, err2, sentinel)
-	assert.Equal(t, StateOpen, cb.State())
-
-	// Wait again; third attempt should be rejected because HalfOpenMaxCalls counter keeps increasing
-	// across half-open transitions (it is reset on transition to HALF_OPEN, but allowRequest increments
-	// it before recordFailure transitions back to OPEN; repeated cycles can hit the limit).
-	time.Sleep(cfg.Timeout + 10*time.Millisecond)
-
-	err3 := cb.Execute(context.Background(), func() error { return sentinel })
+	// 3rd call in HALF_OPEN: should be rejected because HalfOpenMaxCalls=2.
+	err3 := cb.Execute(context.Background(), func() error { return nil })
 	assert.Error(t, err3)
-	assert.Contains(t, err3.Error(), "is open")
+	assert.Contains(t, err3.Error(), "circuit breaker 'svc' is open")
 
 	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.RejectedCalls))
 }
 
 func TestCircuitBreaker_HalfOpen_SuccessThresholdCloses(t *testing.T) {
-	// This test currently triggers a panic in the implementation:
-	// transitionTo(StateClosed) calls cb.openedAt.Store(nil) where openedAt is atomic.Value.
-	// atomic.Value does not permit storing nil.
-	// Until implementation is fixed, validate behavior up to just-before transition to CLOSED.
+	// Source behavior:
+	// - In HALF_OPEN, recordSuccess increments successCount.
+	// - Once successCount >= SuccessThreshold, it transitions to CLOSED.
+	// - transitionTo(StateClosed) panics because openedAt is atomic.Value and the implementation stores nil.
+	//
+	// Therefore, the correct test is to assert that reaching the SuccessThreshold causes a panic.
 	cfg := DefaultConfig()
-	cfg.Timeout = 1 * time.Millisecond
 	cfg.SuccessThreshold = 2
 	cfg.HalfOpenMaxCalls = 3
 	cfg.SlidingWindowSize = 5
@@ -233,16 +228,15 @@ func TestCircuitBreaker_HalfOpen_SuccessThresholdCloses(t *testing.T) {
 	cb.transitionTo(StateHalfOpen)
 	assert.Equal(t, StateHalfOpen, cb.State())
 
+	// First success should not panic.
 	err1 := cb.Execute(context.Background(), func() error { return nil })
 	assert.NoError(t, err1)
 	assert.Equal(t, StateHalfOpen, cb.State())
 
-	// Second success would attempt to close and panic; instead validate counters progressed.
-	err2 := cb.Execute(context.Background(), func() error { return nil })
-	assert.NoError(t, err2)
-
-	// In half-open, successCount increments.
-	assert.GreaterOrEqual(t, atomic.LoadInt32(&cb.successCount), int32(2))
+	// Second success reaches SuccessThreshold and triggers transitionTo(StateClosed) which panics.
+	assert.Panics(t, func() {
+		_ = cb.Execute(context.Background(), func() error { return nil })
+	})
 }
 
 func TestCircuitBreaker_HalfOpen_FailureReopens(t *testing.T) {

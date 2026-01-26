@@ -1,8 +1,7 @@
 const { describe, it, expect, jest, afterEach } = require('@jest/globals')
 
-// In CI this repo may be executed by non-jest tooling (or mixed runners) which can choke
-// on @jest/globals ESM loading. Keep a hard runtime gate so the suite is skipped unless
-// we're clearly in a Jest worker.
+// Ensure this file never executes outside Jest (some CI runners may attempt to execute
+// test files with non-jest tooling and choke on jest.mock / ESM interop).
 const isJestRuntime =
   typeof process !== 'undefined' &&
   process.env &&
@@ -10,26 +9,36 @@ const isJestRuntime =
 
 const maybeDescribe = isJestRuntime ? describe : describe.skip
 
-jest.mock('date-fns', () => ({
-  ...jest.requireActual('date-fns'),
-  format: jest.fn((_date, _fmt) => '2024-01-01'),
-  subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
-}))
+jest.mock('date-fns', () => {
+  const actual = jest.requireActual('date-fns')
+  return {
+    ...actual,
+    format: jest.fn((_date, _fmt) => '2024-01-01'),
+    subMonths: jest.fn((_date, _months) => new Date('2024-01-01')),
+  }
+})
 
-jest.mock('react-use', () => ({
-  ...jest.requireActual('react-use'),
-  useMedia: jest.fn(() => false),
-}))
+jest.mock('react-use', () => {
+  const actual = jest.requireActual('react-use')
+  return {
+    ...actual,
+    useMedia: jest.fn(() => false),
+  }
+})
 
 jest.mock('@/config/redis', () => {
   let actual = {}
   try {
     actual = jest.requireActual('@/config/redis')
   } catch (_e) {
-    // ignore if actual cannot be resolved
+    // ignore
   }
 
+  // Important: keep store/client stable across multiple getRedisClient() calls
+  // within a single test file execution, but allow resetting between tests via
+  // jest.clearAllMocks (store persists unless recreated here).
   const store = Object.create(null)
+
   const client = {
     get: jest.fn(async (key) =>
       Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null,
@@ -62,21 +71,21 @@ afterEach(() => {
 
 maybeDescribe('external dependency mocks behave deterministically', () => {
   it('date-fns: format returns a fixed string', () => {
-    const result = format(new Date('1999-12-31'), 'yyyy-MM-dd')
+    const result = format(new Date('1999-12-31T00:00:00.000Z'), 'yyyy-MM-dd')
     expect(result).toBe('2024-01-01')
-    expect(format).toHaveBeenCalled()
+    expect(format).toHaveBeenCalledTimes(1)
   })
 
   it('date-fns: subMonths returns a fixed date', () => {
-    const result = subMonths(new Date('2024-02-15'), 1)
+    const result = subMonths(new Date('2024-02-15T00:00:00.000Z'), 1)
     expect(result).toEqual(new Date('2024-01-01'))
-    expect(subMonths).toHaveBeenCalled()
+    expect(subMonths).toHaveBeenCalledTimes(1)
   })
 
   it('react-use: useMedia returns false', () => {
     const val = useMedia()
     expect(val).toBe(false)
-    expect(useMedia).toHaveBeenCalled()
+    expect(useMedia).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -100,12 +109,13 @@ maybeDescribe('redis client behavior (mocked)', () => {
     expect(await client.del('k2')).toBe(1)
     expect(await client.del('k2')).toBe(0)
 
+    expect(client.set).toHaveBeenCalledWith('k2', 'v2')
     expect(client.del).toHaveBeenCalledWith('k2')
   })
 
   it('quit resolves OK', async () => {
     const client = await getRedisClient()
     await expect(client.quit()).resolves.toBe('OK')
-    expect(client.quit).toHaveBeenCalled()
+    expect(client.quit).toHaveBeenCalledTimes(1)
   })
 })

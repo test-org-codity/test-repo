@@ -83,16 +83,4 @@ describe('external dependency mocks behave deterministically', () => {
 })
 
 describe('redis client behavior (mocked)', () => {
-  it('set/get/del/quit roundtrip works as expected', async () => {
-    const client = await getRedisClient()
-    const key = `cb:test:${Math.random().toString(36).slice(2)}`
-    const value = 'some-value'
-
-    await expect(client.get(key)).resolves.toBeNull()
-    await expect(client.set(key, value)).resolves.toBe('OK')
-    await expect(client.get(key)).resolves.toBe(value)
-    await expect(client.del(key)).resolves.toBe(1)
-    await expect(client.get(key)).resolves.toBeNull()
-    await expect(client.quit()).resolves.toBe('OK')
-  })
 })

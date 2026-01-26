@@ -16,7 +16,12 @@ jest.mock('react-use', () => {
 })
 
 jest.mock('@/config/redis', () => {
-  const actual = jest.requireActual('@/config/redis')
+  let actual: any = {}
+  try {
+    actual = jest.requireActual('@/config/redis')
+  } catch {
+    // ignore if actual cannot be resolved; we only need to provide the mocked API
+  }
   const store: Record<string, string> = {}
   const client = {
     get: jest.fn(async (key: string) => (key in store ? store[key] : null)),

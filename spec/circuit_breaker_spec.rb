@@ -1,5 +1,5 @@
 require 'spec_helper'
-require_relative '../app/circuit_breaker'
+require 'circuit_breaker'
 
 RSpec.describe CircuitBreaker::Error do
   it 'inherits from StandardError' do

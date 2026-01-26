@@ -102,45 +102,76 @@ if (isJestRuntime && typeof afterEach === 'function') {
   })
 }
 
-maybeDescribe('external dependency mocks behave deterministically', () => {
-  it('date-fns: format returns a fixed string', () => {
-    const result = format(new Date('1999-12-31T00:00:00.000Z'), 'yyyy-MM-dd')
-    expect(result).toBe('2024-01-01')
+maybeDescribe('external dependency mocks', () => {
+  it('mocks date-fns: format and subMonths return stable values and record calls', () => {
+    const d = new Date('2023-05-15T12:00:00.000Z')
+    const out1 = format(d, 'yyyy-MM-dd')
+    expect(out1).toBe('2024-01-01')
+    expect(typeof format).toBe('function')
+    expect(format.mock).toBeDefined()
+    expect(format).toHaveBeenCalledTimes(1)
+    expect(format).toHaveBeenCalledWith(d, 'yyyy-MM-dd')
+
+    const out2 = subMonths(d, 3)
+    expect(out2).toEqual(new Date('2024-01-01T00:00:00.000Z'))
+    expect(typeof subMonths).toBe('function')
+    expect(subMonths.mock).toBeDefined()
+    expect(subMonths).toHaveBeenCalledTimes(1)
+    expect(subMonths).toHaveBeenCalledWith(d, 3)
   })
 
-  it('date-fns: subMonths returns a fixed date instance', () => {
-    const result = subMonths(new Date('2020-06-15T00:00:00.000Z'), 3)
-    expect(result).toBeInstanceOf(Date)
-    expect(result.toISOString()).toBe('2024-01-01T00:00:00.000Z')
-  })
-
-  it('react-use: useMedia is mocked and returns false', () => {
-    const value = useMedia('(min-width: 768px)')
-    expect(value).toBe(false)
+  it('mocks react-use: useMedia returns false and records the query', () => {
+    const result = useMedia('(min-width: 768px)')
+    expect(result).toBe(false)
     expect(typeof useMedia).toBe('function')
+    expect(useMedia.mock).toBeDefined()
+    expect(useMedia).toHaveBeenCalledTimes(1)
+    expect(useMedia).toHaveBeenCalledWith('(min-width: 768px)')
   })
 
-  it('redis: getRedisClient provides isolated in-memory store', async () => {
-    const clientA = await getRedisClient()
-    const clientB = await getRedisClient()
+  it('mocks redis client: set/get/del/quit basic behavior', async () => {
+    const client = await getRedisClient()
+    expect(typeof client.get).toBe('function')
+    expect(typeof client.set).toBe('function')
+    expect(typeof client.del).toBe('function')
+    expect(typeof client.quit).toBe('function')
 
-    // A: set/get
-    await clientA.set('k', 'v')
-    await clientA.set('x', 'y')
-    expect(await clientA.get('k')).toBe('v')
-    expect(await clientA.get('x')).toBe('y')
+    const notFound = await client.get('missing')
+    expect(notFound).toBeNull()
 
-    // B: should be empty initially
-    expect(await clientB.get('k')).toBeNull()
-    expect(await clientB.get('x')).toBeNull()
+    const okSet = await client.set('k', 'v')
+    expect(okSet).toBe('OK')
 
-    // Delete in A
-    const delCount = await clientA.del('k')
-    expect(delCount).toBe(1)
-    expect(await clientA.get('k')).toBeNull()
+    const got = await client.get('k')
+    expect(got).toBe('v')
 
-    // Quit does not throw
-    await expect(clientA.quit()).resolves.toBe('OK')
-    await expect(clientB.quit()).resolves.toBe('OK')
+    const deletedOnce = await client.del('k')
+    expect(deletedOnce).toBe(1)
+
+    const deletedTwice = await client.del('k')
+    expect(deletedTwice).toBe(0)
+
+    const afterDel = await client.get('k')
+    expect(afterDel).toBeNull()
+
+    const quit = await client.quit()
+    expect(quit).toBe('OK')
+  })
+
+  it('redis mock provides isolated stores per client', async () => {
+    const c1 = await getRedisClient()
+    const c2 = await getRedisClient()
+
+    await c1.set('a', '1')
+    const v1 = await c1.get('a')
+    const v2 = await c2.get('a')
+
+    expect(v1).toBe('1')
+    expect(v2).toBeNull()
+
+    // ensure the mocked methods recorded calls
+    expect(c1.set).toHaveBeenCalledWith('a', '1')
+    expect(c1.get).toHaveBeenCalledWith('a')
+    expect(c2.get).toHaveBeenCalledWith('a')
   })
 })

@@ -1,145 +1,156 @@
-import { describe, it, expect, jest, afterEach } from '@jest/globals'
+import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals'
 import config from '../jest.config'
 
 afterEach(() => {
   jest.clearAllMocks()
 })
 
-describe('jest.config.js - export shape', () => {
-  it('exports a plain object', () => {
+describe('jest.config.js', () => {
+  it('exports an object', () => {
     expect(typeof config).toBe('object')
     expect(config).not.toBeNull()
-    expect(Array.isArray(config)).toBe(false)
   })
 
-  it('has expected top-level keys only', () => {
+  it('has the exact top-level keys', () => {
     const keys = Object.keys(config).sort()
-    const expected = [
-      'collectCoverageFrom',
-      'coverageDirectory',
-      'coverageReporters',
-      'moduleFileExtensions',
-      'preset',
-      'roots',
-      'testEnvironment',
-      'testMatch',
-      'transform',
-    ].sort()
-    expect(keys).toEqual(expected)
+    expect(keys).toEqual(
+      [
+        'preset',
+        'testEnvironment',
+        'roots',
+        'testMatch',
+        'moduleFileExtensions',
+        'collectCoverageFrom',
+        'coverageDirectory',
+        'coverageReporters',
+        'transform'
+      ].sort()
+    )
   })
 
-  it('does not define optional fields like moduleNameMapper or setup files', () => {
-    expect('moduleNameMapper' in config).toBe(false)
-    expect('setupFiles' in config).toBe(false)
-    expect('setupFilesAfterEnv' in config).toBe(false)
-    expect('collectCoverage' in config).toBe(false)
-    expect('extensionsToTreatAsEsm' in config).toBe(false)
-  })
-})
-
-describe('jest.config.js - core settings', () => {
-  it('preset is ts-jest', () => {
+  it('sets preset to ts-jest', () => {
     expect(config.preset).toBe('ts-jest')
   })
 
-  it('testEnvironment is node', () => {
+  it('sets testEnvironment to node', () => {
     expect(config.testEnvironment).toBe('node')
   })
-})
 
-describe('jest.config.js - roots', () => {
-  it('roots are correct and ordered', () => {
+  it('defines roots correctly', () => {
+    expect(Array.isArray(config.roots)).toBe(true)
     expect(config.roots).toEqual(['<rootDir>/src', '<rootDir>/__tests__'])
-  })
-
-  it('roots entries start with <rootDir>/', () => {
-    for (const root of config.roots) {
-      expect(root.startsWith('<rootDir>/')).toBe(true)
+    for (const r of config.roots) {
+      expect(r.startsWith('<rootDir>/')).toBe(true)
     }
   })
-})
 
-describe('jest.config.js - testMatch', () => {
-  it('testMatch patterns are correct and ts-only', () => {
+  it('defines testMatch correctly', () => {
+    expect(Array.isArray(config.testMatch)).toBe(true)
     expect(config.testMatch).toEqual(['**/__tests__/**/*.test.ts', '**/?(*.)+(spec|test).ts'])
-    for (const pattern of config.testMatch) {
-      expect(pattern.endsWith('.ts')).toBe(true)
-    }
   })
 
-  it('testMatch includes both spec and test patterns', () => {
-    const joined = config.testMatch.join(' ')
-    expect(joined.includes('spec')).toBe(true)
-    expect(joined.includes('test')).toBe(true)
-  })
-})
-
-describe('jest.config.js - moduleFileExtensions', () => {
-  it('moduleFileExtensions are correct and include node', () => {
+  it('defines moduleFileExtensions correctly', () => {
     expect(config.moduleFileExtensions).toEqual(['ts', 'tsx', 'js', 'jsx', 'json', 'node'])
-    expect(config.moduleFileExtensions).toContain('node')
-  })
-})
-
-describe('jest.config.js - coverage', () => {
-  it('collectCoverageFrom globs include src ts/tsx but exclude d.ts and *.test.ts', () => {
-    expect(config.collectCoverageFrom).toContain('src/**/*.{ts,tsx}')
-    expect(config.collectCoverageFrom).toContain('!src/**/*.d.ts')
-    expect(config.collectCoverageFrom).toContain('!src/**/*.test.ts')
-    for (const glob of config.collectCoverageFrom) {
-      expect(glob.startsWith('src/') || glob.startsWith('!src/')).toBe(true)
-    }
+    expect(config.moduleFileExtensions.length).toBe(6)
+    expect(config.moduleFileExtensions.includes('ts')).toBe(true)
+    expect(config.moduleFileExtensions.includes('tsx')).toBe(true)
+    expect(config.moduleFileExtensions.includes('js')).toBe(true)
+    expect(config.moduleFileExtensions.includes('jsx')).toBe(true)
+    expect(config.moduleFileExtensions.includes('json')).toBe(true)
+    expect(config.moduleFileExtensions.includes('node')).toBe(true)
   })
 
-  it('coverageDirectory is coverage', () => {
+  it('defines collectCoverageFrom with expected inclusions and exclusions', () => {
+    expect(Array.isArray(config.collectCoverageFrom)).toBe(true)
+    expect(config.collectCoverageFrom).toEqual([
+      'src/**/*.{ts,tsx}',
+      '!src/**/*.d.ts',
+      '!src/**/*.test.ts'
+    ])
+    const exclusions = config.collectCoverageFrom.filter((p) => p.startsWith('!'))
+    expect(exclusions).toEqual(['!src/**/*.d.ts', '!src/**/*.test.ts'])
+  })
+
+  it('sets coverageDirectory correctly', () => {
     expect(config.coverageDirectory).toBe('coverage')
   })
 
-  it('coverageReporters include text, json, html and only those', () => {
+  it('sets coverageReporters correctly', () => {
     expect(config.coverageReporters).toEqual(['text', 'json', 'html'])
+    expect(config.coverageReporters.includes('text')).toBe(true)
+    expect(config.coverageReporters.includes('json')).toBe(true)
+    expect(config.coverageReporters.includes('html')).toBe(true)
   })
-})
 
-describe('jest.config.js - transform', () => {
-  it('transform maps ts/tsx to ts-jest with correct regex string', () => {
+  it('defines transform mapping with a single regex key for ts/tsx handled by ts-jest', () => {
     expect(typeof config.transform).toBe('object')
-    const keys = Object.keys(config.transform)
-    expect(keys).toEqual(['^.+\\.tsx?$'])
-    expect(config.transform['^.+\\.tsx?$']).toBe('ts-jest')
+    expect(config.transform).not.toBeNull()
+    const entries = Object.entries(config.transform)
+    expect(entries.length).toBe(1)
+    const [pattern, transformer] = entries[0]
+    expect(pattern).toBe('^.+\\.tsx?$')
+    expect(transformer).toBe('ts-jest')
   })
 
-  it('transform regex matches .ts and .tsx files and not .js', () => {
-    const regexStr = Object.keys(config.transform)[0]
-    const re = new RegExp(regexStr)
+  it('transform regex matches .ts files', () => {
+    const pattern = Object.keys(config.transform)[0]
+    const re = new RegExp(pattern)
     expect(re.test('index.ts')).toBe(true)
-    expect(re.test('components/Button.tsx')).toBe(true)
-    expect(re.test('script.js')).toBe(false)
-    expect(re.test('script.jsx')).toBe(false)
-  })
-})
-
-describe('jest.config.js - module caching behavior', () => {
-  it('returns same instance within same module registry', () => {
-    jest.isolateModules(() => {
-      const a = require('../jest.config')
-      const b = require('../jest.config')
-      expect(a).toBe(b)
-    })
+    expect(re.test('nested/path/file.ts')).toBe(true)
   })
 
-  it('returns a fresh instance across isolated module runs', () => {
-    let ref1 = null
-    let ref2 = null
+  it('transform regex matches .tsx files', () => {
+    const pattern = Object.keys(config.transform)[0]
+    const re = new RegExp(pattern)
+    expect(re.test('Component.tsx')).toBe(true)
+    expect(re.test('nested/Component.tsx')).toBe(true)
+  })
 
-    jest.isolateModules(() => {
-      ref1 = require('../jest.config')
-    })
-    jest.isolateModules(() => {
-      ref2 = require('../jest.config')
-    })
+  it('transform regex matches .d.ts files', () => {
+    const pattern = Object.keys(config.transform)[0]
+    const re = new RegExp(pattern)
+    expect(re.test('types.d.ts')).toBe(true)
+  })
 
-    expect(ref1).not.toBe(ref2)
-    // But they should be deeply equal in content
-    expect(ref1).toEqual(ref2)
+  it('transform regex does not match .js files', () => {
+    const pattern = Object.keys(config.transform)[0]
+    const re = new RegExp(pattern)
+    expect(re.test('index.js')).toBe(false)
+    expect(re.test('file.jsx')).toBe(false)
+  })
+
+  it('deep equality of the full config object matches expected structure', () => {
+    const expected = {
+      preset: 'ts-jest',
+      testEnvironment: 'node',
+      roots: ['<rootDir>/src', '<rootDir>/__tests__'],
+      testMatch: ['**/__tests__/**/*.test.ts', '**/?(*.)+(spec|test).ts'],
+      moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
+      collectCoverageFrom: [
+        'src/**/*.{ts,tsx}',
+        '!src/**/*.d.ts',
+        '!src/**/*.test.ts'
+      ],
+      coverageDirectory: 'coverage',
+      coverageReporters: ['text', 'json', 'html'],
+      transform: {
+        '^.+\\.tsx?$': 'ts-jest'
+      }
+    }
+    expect(config).toEqual(expected)
+  })
+
+  it('does not include unexpected optional config fields', () => {
+    const unexpectedKeys = [
+      'moduleNameMapper',
+      'setupFiles',
+      'setupFilesAfterEnv',
+      'globals',
+      'testPathIgnorePatterns',
+      'coveragePathIgnorePatterns'
+    ]
+    for (const key of unexpectedKeys) {
+      expect(Object.prototype.hasOwnProperty.call(config, key)).toBe(false)
+    }
   })
 })

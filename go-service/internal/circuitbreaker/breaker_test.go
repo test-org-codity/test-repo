@@ -102,6 +102,8 @@ func TestCircuitBreaker_Execute_Failure_ThresholdTripsOpen(t *testing.T) {
 	cfg.FailureRateThreshold = 1.0
 	cb := New("exec-fail", cfg)
 
+	cb.clearSlidingWindow()
+
 	opErr := assert.AnError
 
 	for i := 0; i < 2; i++ {
@@ -283,6 +285,8 @@ func TestCircuitBreaker_recordFailure_ThresholdOrRateTripsOpen(t *testing.T) {
 	cfg.SlidingWindowSize = 4
 	cfg.FailureRateThreshold = 0.5
 	cb := New("failure-closed", cfg)
+
+	cb.clearSlidingWindow()
 
 	cb.recordFailure(1 * time.Millisecond)
 	assert.Equal(t, StateClosed, cb.State())

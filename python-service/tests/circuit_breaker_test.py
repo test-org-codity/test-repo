@@ -1,300 +1,579 @@
-from __future__ import annotations
-
 import json
-import os
-import threading
 import time
-import urllib.error
-import urllib.request
-from collections import deque
-from dataclasses import dataclass
-from enum import Enum
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import pytest
+
+from src.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitBreakerMetrics,
+    CircuitBreakerOpenError,
+    CircuitState,
+    DistributedCircuitBreakerCoordinator,
+)
 
 
-class CircuitState(Enum):
-    CLOSED = "CLOSED"
-    OPEN = "OPEN"
-    HALF_OPEN = "HALF_OPEN"
+@pytest.fixture(autouse=True)
+def reset_circuit_breaker_registry():
+    """Reset CircuitBreaker global registry to avoid test cross-talk."""
+    CircuitBreaker._registry.clear()
+    yield
+    CircuitBreaker._registry.clear()
 
 
-class CircuitBreakerOpenError(RuntimeError):
-    def __init__(self, name: str, remaining_time: float):
-        self.name = name
-        self.remaining_time = float(remaining_time)
-        super().__init__(f"Circuit breaker '{name}' is open. Retry after {self.remaining_time:.2f}s")
+@pytest.fixture
+def breaker_config():
+    """Create a deterministic CircuitBreakerConfig for tests."""
+    return CircuitBreakerConfig(
+        failure_threshold=3,
+        success_threshold=2,
+        timeout_seconds=10.0,
+        half_open_max_calls=2,
+        sliding_window_size=4,
+        failure_rate_threshold=0.5,
+    )
 
 
-@dataclass
-class CircuitBreakerConfig:
-    failure_threshold: int = 5
-    success_threshold: int = 3
-    timeout_seconds: float = 30.0
-    half_open_max_calls: int = 3
-    sliding_window_size: int = 10
-    failure_rate_threshold: float = 0.5
+@pytest.fixture
+def breaker(breaker_config):
+    """Create a CircuitBreaker instance for testing."""
+    return CircuitBreaker(name="svc", config=breaker_config)
 
 
-class CircuitBreakerMetrics:
-    def __init__(self):
-        self.total_calls = 0
-        self.successful_calls = 0
-        self.failed_calls = 0
-        self.rejected_calls = 0
-        self.state_transitions = 0
-        self.average_response_time = 0.0
-        self._response_times = deque(maxlen=100)
-
-    def record_response_time(self, duration: float) -> None:
-        self._response_times.append(float(duration))
-        if self._response_times:
-            self.average_response_time = sum(self._response_times) / len(self._response_times)
-        else:
-            self.average_response_time = 0.0
+@pytest.fixture
+def metrics():
+    """Create CircuitBreakerMetrics instance for testing."""
+    return CircuitBreakerMetrics()
 
 
-class CircuitBreaker:
-    _registry: dict[str, "CircuitBreaker"] = {}
+@pytest.fixture
+def coordinator():
+    """Create a DistributedCircuitBreakerCoordinator for testing."""
+    return DistributedCircuitBreakerCoordinator(coordinator_url="http://coordinator", sync_interval=0.01)
 
-    def __init__(self, name: str, config: CircuitBreakerConfig | None = None):
-        self.name = name
-        self.config = config or CircuitBreakerConfig()
-        self._state = CircuitState.CLOSED
-        self._failure_count = 0
-        self._success_count = 0
-        self._half_open_calls = 0
-        self._opened_at: float | None = None
-        self.metrics = CircuitBreakerMetrics()
-        self._sliding_window = deque(maxlen=self.config.sliding_window_size)
 
-    @classmethod
-    def get_or_create(cls, name: str, config: CircuitBreakerConfig | None = None) -> "CircuitBreaker":
-        if name in cls._registry:
-            return cls._registry[name]
-        b = cls(name=name, config=config or CircuitBreakerConfig())
-        cls._registry[name] = b
-        return b
+def test_circuit_state_enum_values():
+    """Test CircuitState enum values are as defined in source."""
+    assert CircuitState.CLOSED.value == "CLOSED"
+    assert CircuitState.OPEN.value == "OPEN"
+    assert CircuitState.HALF_OPEN.value == "HALF_OPEN"
 
-    @property
-    def state(self) -> CircuitState:
-        if self._state == CircuitState.OPEN and self._should_attempt_reset():
-            self._transition_to(CircuitState.HALF_OPEN)
-        return self._state
 
-    def _should_attempt_reset(self) -> bool:
-        if self._opened_at is None:
-            return False
-        return (time.time() - self._opened_at) >= self.config.timeout_seconds
+def test_circuit_breaker_config_defaults():
+    """Test CircuitBreakerConfig default values."""
+    cfg = CircuitBreakerConfig()
+    assert cfg.failure_threshold == 5
+    assert cfg.success_threshold == 3
+    assert cfg.timeout_seconds == 30.0
+    assert cfg.half_open_max_calls == 3
+    assert cfg.sliding_window_size == 10
+    assert cfg.failure_rate_threshold == 0.5
 
-    def _transition_to(self, new_state: CircuitState) -> None:
-        if self._state != new_state:
-            self.metrics.state_transitions += 1
 
-        self._state = new_state
-        if new_state == CircuitState.OPEN:
-            self._opened_at = time.time()
-            self._half_open_calls = 0
-            self._success_count = 0
-        elif new_state == CircuitState.HALF_OPEN:
-            self._half_open_calls = 0
-            self._success_count = 0
-            self._opened_at = None
-        elif new_state == CircuitState.CLOSED:
-            self._failure_count = 0
-            self._success_count = 0
-            self._half_open_calls = 0
-            self._opened_at = None
-            self._sliding_window.clear()
+def test_circuit_breaker_metrics_record_response_time_updates_average(metrics):
+    """Test record_response_time tracks average response time."""
+    metrics.record_response_time(0.1)
+    metrics.record_response_time(0.3)
+    assert metrics.average_response_time == pytest.approx(0.2)
 
-    def _allow_request(self) -> bool:
-        st = self.state
-        if st == CircuitState.CLOSED:
-            return True
-        if st == CircuitState.OPEN:
-            return False
-        if st == CircuitState.HALF_OPEN:
-            if self._half_open_calls >= self.config.half_open_max_calls:
-                return False
-            self._half_open_calls += 1
-            return True
-        return False
 
-    def _calculate_failure_rate(self) -> float:
-        if len(self._sliding_window) < self.config.sliding_window_size:
-            return 0.0
-        failures = sum(1 for ok in self._sliding_window if not ok)
-        return failures / len(self._sliding_window) if self._sliding_window else 0.0
+def test_circuit_breaker_metrics_record_response_time_keeps_last_100():
+    """Test record_response_time keeps at most 100 response times."""
+    m = CircuitBreakerMetrics()
+    for _ in range(150):
+        m.record_response_time(1.0)
+    assert len(m._response_times) == 100
+    assert m.average_response_time == pytest.approx(1.0)
 
-    def _record_success(self, duration: float) -> None:
-        self.metrics.successful_calls += 1
-        self.metrics.record_response_time(duration)
-        self._sliding_window.append(True)
 
-        if self._state == CircuitState.HALF_OPEN:
-            self._success_count += 1
-            if self._success_count >= self.config.success_threshold:
-                self._transition_to(CircuitState.CLOSED)
-            return
+def test_circuit_breaker_open_error_attributes_and_message():
+    """Test CircuitBreakerOpenError stores attributes and formats message."""
+    err = CircuitBreakerOpenError("svc", 1.23456)
+    assert err.name == "svc"
+    assert err.remaining_time == 1.23456
+    assert "Circuit breaker 'svc' is open. Retry after 1.23s" in str(err)
 
-        if self._failure_count > 0:
-            self._failure_count -= 1
 
-    def _record_failure(self, duration: float) -> None:
-        self.metrics.failed_calls += 1
-        self.metrics.record_response_time(duration)
-        self._sliding_window.append(False)
+def test_circuit_breaker_init_initial_state_and_counters(breaker, breaker_config):
+    """Test CircuitBreaker initializes state, counters, window, and metrics."""
+    assert breaker.name == "svc"
+    assert breaker.config is breaker_config
+    assert breaker.state == CircuitState.CLOSED
 
-        if self._state == CircuitState.HALF_OPEN:
-            self._transition_to(CircuitState.OPEN)
-            return
+    assert breaker._failure_count == 0
+    assert breaker._success_count == 0
+    assert breaker._half_open_calls == 0
+    assert breaker._opened_at is None
 
-        self._failure_count += 1
-        if self._failure_count >= self.config.failure_threshold:
-            self._transition_to(CircuitState.OPEN)
-            return
+    assert breaker.metrics.total_calls == 0
+    assert breaker.metrics.successful_calls == 0
+    assert breaker.metrics.failed_calls == 0
+    assert breaker.metrics.rejected_calls == 0
+    assert breaker.metrics.state_transitions == 0
 
-        if self._calculate_failure_rate() > self.config.failure_rate_threshold:
-            self._transition_to(CircuitState.OPEN)
+    assert len(breaker._sliding_window) == 0
+    assert breaker._sliding_window.maxlen == breaker_config.sliding_window_size
 
-    def execute(self, func, fallback=None):
-        if not self._allow_request():
-            self.metrics.rejected_calls += 1
-            now = time.time()
-            opened_at = self._opened_at if self._opened_at is not None else now
 
-            # Clamp remaining time to [0, timeout_seconds] even if clock drift makes elapsed negative.
-            elapsed = now - opened_at
-            remaining = self.config.timeout_seconds - elapsed
-            if remaining < 0:
-                remaining = 0.0
-            if remaining > self.config.timeout_seconds:
-                remaining = float(self.config.timeout_seconds)
+def test_circuit_breaker_get_or_create_returns_same_instance_and_keeps_first_config(breaker_config):
+    """Test get_or_create caches by name and does not replace existing instance/config."""
+    cfg1 = breaker_config
+    cfg2 = CircuitBreakerConfig(failure_threshold=99)
 
-            if fallback is not None:
-                return fallback()
-            raise CircuitBreakerOpenError(self.name, remaining)
+    b1 = CircuitBreaker.get_or_create("svc", cfg1)
+    b2 = CircuitBreaker.get_or_create("svc", cfg2)
 
-        start = time.time()
-        self.metrics.total_calls += 1
+    assert b1 is b2
+    assert b2.config is cfg1
+    assert CircuitBreaker._registry["svc"] is b1
+
+
+def test_circuit_breaker_should_attempt_reset_false_when_never_opened(breaker):
+    """Test _should_attempt_reset returns False when _opened_at is None."""
+    breaker._opened_at = None
+    assert breaker._should_attempt_reset() is False
+
+
+def test_circuit_breaker_should_attempt_reset_true_after_timeout(breaker):
+    """Test _should_attempt_reset returns True after timeout has elapsed."""
+    breaker._opened_at = 100.0
+    breaker.config.timeout_seconds = 10.0
+    with patch("src.circuit_breaker.time.time", return_value=110.0):
+        assert breaker._should_attempt_reset() is True
+
+
+def test_circuit_breaker_should_attempt_reset_false_before_timeout(breaker):
+    """Test _should_attempt_reset returns False before timeout has elapsed."""
+    breaker._opened_at = 100.0
+    breaker.config.timeout_seconds = 10.0
+    with patch("src.circuit_breaker.time.time", return_value=109.999):
+        assert breaker._should_attempt_reset() is False
+
+
+def test_circuit_breaker_state_auto_transitions_open_to_half_open_after_timeout(breaker):
+    """Test state property transitions OPEN->HALF_OPEN when timeout has elapsed."""
+    breaker._state = CircuitState.OPEN
+    breaker._opened_at = 100.0
+    breaker.config.timeout_seconds = 10.0
+
+    with patch("src.circuit_breaker.time.time", return_value=111.0):
+        assert breaker.state == CircuitState.HALF_OPEN
+        assert breaker.metrics.state_transitions == 1
+        assert breaker._half_open_calls == 0
+        assert breaker._success_count == 0
+
+
+def test_circuit_breaker_transition_to_open_sets_opened_at_and_increments_transitions(breaker):
+    """Test _transition_to(OPEN) sets opened time and increments transitions."""
+    with patch("src.circuit_breaker.time.time", return_value=123.45):
+        breaker._transition_to(CircuitState.OPEN)
+    assert breaker._state == CircuitState.OPEN
+    assert breaker._opened_at == pytest.approx(123.45)
+    assert breaker.metrics.state_transitions == 1
+
+
+def test_circuit_breaker_transition_to_half_open_resets_half_open_calls_and_success_count(breaker):
+    """Test _transition_to(HALF_OPEN) resets half-open call counter and success_count."""
+    breaker._half_open_calls = 99
+    breaker._success_count = 10
+    breaker._transition_to(CircuitState.HALF_OPEN)
+    assert breaker._state == CircuitState.HALF_OPEN
+    assert breaker._half_open_calls == 0
+    assert breaker._success_count == 0
+    assert breaker.metrics.state_transitions == 1
+
+
+def test_circuit_breaker_transition_to_closed_resets_counters_and_clears_sliding_window(breaker):
+    """Test _transition_to(CLOSED) resets counts, opened_at, and clears sliding window."""
+    breaker._state = CircuitState.OPEN
+    breaker._failure_count = 5
+    breaker._success_count = 2
+    breaker._opened_at = 123.0
+    breaker._sliding_window.extend([True, False, False])
+
+    breaker._transition_to(CircuitState.CLOSED)
+
+    assert breaker._state == CircuitState.CLOSED
+    assert breaker._failure_count == 0
+    assert breaker._success_count == 0
+    assert breaker._opened_at is None
+    assert len(breaker._sliding_window) == 0
+    assert breaker.metrics.state_transitions == 1
+
+
+def test_circuit_breaker_allow_request_closed_true(breaker):
+    """Test _allow_request returns True in CLOSED state."""
+    breaker._state = CircuitState.CLOSED
+    assert breaker._allow_request() is True
+
+
+def test_circuit_breaker_allow_request_open_false(breaker):
+    """Test _allow_request returns False in OPEN state."""
+    breaker._state = CircuitState.OPEN
+    assert breaker._allow_request() is False
+
+
+def test_circuit_breaker_allow_request_half_open_allows_up_to_max_calls(breaker):
+    """Test _allow_request in HALF_OPEN allows limited number of calls and increments counter."""
+    breaker._state = CircuitState.HALF_OPEN
+    breaker.config.half_open_max_calls = 2
+
+    assert breaker._allow_request() is True
+    assert breaker._half_open_calls == 1
+
+    assert breaker._allow_request() is True
+    assert breaker._half_open_calls == 2
+
+    assert breaker._allow_request() is False
+    assert breaker._half_open_calls == 2
+
+
+def test_circuit_breaker_execute_success_records_metrics_and_decrements_failure_count(breaker):
+    """Test execute() success updates metrics, response times, and reduces failure_count by 1 in CLOSED."""
+    breaker._state = CircuitState.CLOSED
+    breaker._failure_count = 2
+
+    times = [100.0, 100.5, 100.5, 100.5]  # start, after op, last_success_time, record_response_time doesn't call time
+    with patch("src.circuit_breaker.time.time", side_effect=times):
+        result = breaker.execute(lambda: "ok")
+
+    assert result == "ok"
+    assert breaker.metrics.total_calls == 1
+    assert breaker.metrics.successful_calls == 1
+    assert breaker.metrics.failed_calls == 0
+    assert breaker.metrics.average_response_time == pytest.approx(0.5)
+    assert breaker._failure_count == 1
+    assert list(breaker._sliding_window) == [True]
+
+
+def test_circuit_breaker_execute_failure_records_metrics_and_raises(breaker):
+    """Test execute() failure updates metrics and re-raises original exception."""
+    breaker._state = CircuitState.CLOSED
+
+    def op():
+        raise ValueError("boom")
+
+    times = [200.0, 200.25, 200.25]
+    with patch("src.circuit_breaker.time.time", side_effect=times):
+        with pytest.raises(ValueError, match="boom"):
+            breaker.execute(op)
+
+    assert breaker.metrics.total_calls == 1
+    assert breaker.metrics.successful_calls == 0
+    assert breaker.metrics.failed_calls == 1
+    assert breaker.metrics.average_response_time == pytest.approx(0.25)
+    assert list(breaker._sliding_window) == [False]
+
+
+def test_circuit_breaker_execute_open_rejects_and_raises_open_error_with_remaining_time(breaker):
+    """Test execute() when OPEN rejects call, increments rejected_calls, and raises CircuitBreakerOpenError."""
+    breaker._state = CircuitState.OPEN
+    breaker.config.timeout_seconds = 10.0
+    breaker._opened_at = 100.0
+
+    with patch("src.circuit_breaker.time.time", return_value=104.0):
+        with pytest.raises(CircuitBreakerOpenError) as ei:
+            breaker.execute(lambda: "nope")
+
+    assert breaker.metrics.rejected_calls == 1
+    assert ei.value.name == "svc"
+    assert ei.value.remaining_time == pytest.approx(6.0)
+
+
+def test_circuit_breaker_execute_open_uses_fallback_and_increments_rejected_calls(breaker):
+    """Test execute() when OPEN uses fallback if provided and does not raise."""
+    breaker._state = CircuitState.OPEN
+    breaker._opened_at = 100.0
+    breaker.config.timeout_seconds = 10.0
+
+    with patch("src.circuit_breaker.time.time", return_value=101.0):
+        result = breaker.execute(lambda: "primary", fallback=lambda: "fallback")
+
+    assert result == "fallback"
+    assert breaker.metrics.rejected_calls == 1
+    assert breaker.metrics.total_calls == 0  # total_calls increments only when request allowed
+
+
+def test_circuit_breaker_record_failure_opens_when_failure_threshold_reached(breaker):
+    """Test _record_failure transitions CLOSED->OPEN once failure_count >= failure_threshold."""
+    breaker._state = CircuitState.CLOSED
+    breaker.config.failure_threshold = 3
+    breaker.config.sliding_window_size = breaker._sliding_window.maxlen
+    breaker.config.failure_rate_threshold = 1.0  # avoid failure rate opening earlier
+
+    with patch("src.circuit_breaker.time.time", return_value=10.0):
+        breaker._record_failure(0.1)
+    assert breaker._state == CircuitState.CLOSED
+    assert breaker._failure_count == 1
+
+    with patch("src.circuit_breaker.time.time", return_value=11.0):
+        breaker._record_failure(0.1)
+    assert breaker._state == CircuitState.CLOSED
+    assert breaker._failure_count == 2
+
+    with patch("src.circuit_breaker.time.time", return_value=12.0):
+        breaker._record_failure(0.1)
+    assert breaker._state == CircuitState.OPEN
+    assert breaker._opened_at == pytest.approx(12.0)
+    assert breaker.metrics.state_transitions == 1
+
+
+def test_circuit_breaker_record_failure_opens_when_failure_rate_threshold_reached(breaker):
+    """Test _record_failure transitions CLOSED->OPEN when sliding window failure rate exceeds threshold."""
+    breaker._state = CircuitState.CLOSED
+    breaker.config.sliding_window_size = 4
+    breaker._sliding_window = type(breaker._sliding_window)(maxlen=breaker.config.sliding_window_size)
+    breaker.config.failure_threshold = 999  # ensure rate triggers first
+    breaker.config.failure_rate_threshold = 0.5
+
+    with patch("src.circuit_breaker.time.time", return_value=1.0):
+        breaker._record_success(0.01)
+    with patch("src.circuit_breaker.time.time", return_value=2.0):
+        breaker._record_failure(0.01)
+    with patch("src.circuit_breaker.time.time", return_value=3.0):
+        breaker._record_failure(0.01)
+    assert breaker._state == CircuitState.CLOSED  # still not enough window entries
+
+    with patch("src.circuit_breaker.time.time", return_value=4.0):
+        breaker._record_failure(0.01)
+
+    assert list(breaker._sliding_window) == [True, False, False, False]
+    assert breaker._calculate_failure_rate() == pytest.approx(0.75)
+    assert breaker._state == CircuitState.OPEN
+    assert breaker._opened_at == pytest.approx(4.0)
+
+
+def test_circuit_breaker_calculate_failure_rate_returns_zero_until_window_full(breaker):
+    """Test _calculate_failure_rate returns 0.0 until sliding window reaches configured size."""
+    breaker.config.sliding_window_size = 4
+    breaker._sliding_window = type(breaker._sliding_window)(maxlen=breaker.config.sliding_window_size)
+
+    breaker._sliding_window.extend([False, True, False])
+    assert breaker._calculate_failure_rate() == pytest.approx(0.0)
+
+    breaker._sliding_window.append(False)
+    assert breaker._calculate_failure_rate() == pytest.approx(3 / 4)
+
+
+def test_circuit_breaker_record_success_in_half_open_closes_after_success_threshold(breaker):
+    """Test HALF_OPEN -> CLOSED after enough consecutive successes."""
+    breaker._state = CircuitState.HALF_OPEN
+    breaker.config.success_threshold = 2
+    breaker._success_count = 0
+
+    with patch("src.circuit_breaker.time.time", return_value=10.0):
+        breaker._record_success(0.1)
+    assert breaker._state == CircuitState.HALF_OPEN
+    assert breaker._success_count == 1
+
+    with patch("src.circuit_breaker.time.time", return_value=11.0):
+        breaker._record_success(0.1)
+    assert breaker._state == CircuitState.CLOSED
+    assert breaker._failure_count == 0
+    assert breaker._success_count == 0
+    assert breaker._opened_at is None
+    assert len(breaker._sliding_window) == 0
+    assert breaker.metrics.state_transitions == 1
+
+
+def test_circuit_breaker_record_failure_in_half_open_transitions_to_open(breaker):
+    """Test _record_failure in HALF_OPEN immediately transitions to OPEN."""
+    breaker._state = CircuitState.HALF_OPEN
+    breaker._opened_at = None
+
+    with patch("src.circuit_breaker.time.time", return_value=99.0):
+        breaker._record_failure(0.2)
+
+    assert breaker._state == CircuitState.OPEN
+    assert breaker._opened_at == pytest.approx(99.0)
+    assert breaker.metrics.state_transitions == 1
+
+
+def test_circuit_breaker_get_health_info_includes_expected_fields_and_units(breaker):
+    """Test get_health_info returns expected structure and average response time in ms."""
+    breaker._state = CircuitState.CLOSED
+    with patch("src.circuit_breaker.time.time", return_value=10.0):
+        breaker.execute(lambda: "ok")
+    with patch("src.circuit_breaker.time.time", return_value=20.0):
         try:
-            result = func()
-        except Exception:
-            end = time.time()
-            self._record_failure(end - start)
-            _ = time.time()
-            raise
-        else:
-            end = time.time()
-            self._record_success(end - start)
-            _ = time.time()
-            return result
+            breaker.execute(lambda: (_ for _ in ()).throw(RuntimeError("x")))
+        except RuntimeError:
+            pass
 
-    def get_health_info(self) -> dict:
-        return {
-            "name": self.name,
-            "state": self.state.value,
-            "failure_count": self._failure_count,
-            "success_count": self._success_count,
-            "failure_rate": self._calculate_failure_rate(),
-            "metrics": {
-                "total_calls": self.metrics.total_calls,
-                "successful_calls": self.metrics.successful_calls,
-                "failed_calls": self.metrics.failed_calls,
-                "rejected_calls": self.metrics.rejected_calls,
-                "average_response_time_ms": self.metrics.average_response_time * 1000.0,
-                "state_transitions": self.metrics.state_transitions,
-            },
-            "config": {
-                "failure_threshold": self.config.failure_threshold,
-                "success_threshold": self.config.success_threshold,
-                "timeout_seconds": self.config.timeout_seconds,
-                "half_open_max_calls": self.config.half_open_max_calls,
-                "sliding_window_size": self.config.sliding_window_size,
-                "failure_rate_threshold": self.config.failure_rate_threshold,
-            },
-        }
+    info = breaker.get_health_info()
+    assert info["name"] == "svc"
+    assert info["state"] == "CLOSED"
+    assert "failure_rate" in info
+    assert info["metrics"]["total_calls"] == 2
+    assert info["metrics"]["successful_calls"] == 1
+    assert info["metrics"]["failed_calls"] == 1
+    assert info["metrics"]["rejected_calls"] == 0
+    assert "average_response_time_ms" in info["metrics"]
+    assert info["metrics"]["average_response_time_ms"] == pytest.approx(breaker.metrics.average_response_time * 1000)
+    assert info["config"]["failure_threshold"] == breaker.config.failure_threshold
+    assert info["config"]["success_threshold"] == breaker.config.success_threshold
+    assert info["config"]["timeout_seconds"] == breaker.config.timeout_seconds
 
 
-class DistributedCircuitBreakerCoordinator:
-    def __init__(self, coordinator_url: str, sync_interval: float = 1.0):
-        self.coordinator_url = coordinator_url.rstrip("/")
-        self.sync_interval = float(sync_interval)
-        self.node_id = os.environ.get("NODE_ID", "node-1")
-        self._breakers: dict[str, CircuitBreaker] = {}
-        self._running = False
-        self._sync_thread: threading.Thread | None = None
+def test_distributed_coordinator_init_sets_node_id_from_env(monkeypatch):
+    """Test coordinator node_id uses NODE_ID env var when present."""
+    monkeypatch.setenv("NODE_ID", "node-xyz")
+    coord = DistributedCircuitBreakerCoordinator("http://coordinator", sync_interval=1.0)
+    assert coord.node_id == "node-xyz"
+    assert coord.coordinator_url == "http://coordinator"
+    assert coord.sync_interval == 1.0
 
-    def register_breaker(self, breaker: CircuitBreaker) -> None:
-        self._breakers[breaker.name] = breaker
-        self._send_registration(breaker)
 
-    def _send_registration(self, breaker: CircuitBreaker) -> None:
-        url = f"{self.coordinator_url}/circuit-breakers/register"
-        payload = {
-            "service": breaker.name,
-            "node_id": self.node_id,
-            "failure_threshold": breaker.config.failure_threshold,
-            "success_threshold": breaker.config.success_threshold,
-        }
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data,
-            method="POST",
-            headers={"Content-type": "application/json"},
-        )
-        try:
-            urllib.request.urlopen(req, timeout=5)
-        except urllib.error.URLError:
-            return
+def test_distributed_coordinator_register_breaker_sends_registration(coordinator, breaker):
+    """Test register_breaker stores breaker and calls _send_registration."""
+    coordinator._send_registration = Mock()
+    coordinator.register_breaker(breaker)
+    assert coordinator._breakers["svc"] is breaker
+    coordinator._send_registration.assert_called_once_with(breaker)
 
-    def _synchronize_states(self) -> None:
-        url = f"{self.coordinator_url}/circuit-breakers/state"
-        for breaker in list(self._breakers.values()):
-            payload = {
-                "service": breaker.name,
-                "node_id": self.node_id,
-                "state": breaker.state.value,
-                "failure_count": breaker._failure_count,
-                "timestamp": int(time.time() * 1000),
-                "health_info": breaker.get_health_info(),
-            }
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                url,
-                data=data,
-                method="POST",
-                headers={"Content-type": "application/json"},
-            )
-            try:
-                urllib.request.urlopen(req, timeout=5)
-            except urllib.error.URLError:
-                continue
 
-    def _sync_loop(self) -> None:
-        while self._running:
-            try:
-                self._synchronize_states()
-            except Exception:
-                pass
-            time.sleep(self.sync_interval)
+def test_distributed_coordinator_send_registration_posts_json(coordinator, breaker):
+    """Test _send_registration makes a POST request to the register endpoint with expected payload."""
+    with patch("src.circuit_breaker.urllib.request.urlopen") as mock_urlopen:
+        coordinator._send_registration(breaker)
 
-    def start_sync(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        self._sync_thread = threading.Thread(target=self._sync_loop, daemon=True)
-        self._sync_thread.start()
+    assert mock_urlopen.call_count == 1
+    req = mock_urlopen.call_args.args[0]
+    assert req.full_url == "http://coordinator/circuit-breakers/register"
+    assert req.method == "POST"
+    assert req.headers.get("Content-type") == "application/json"
 
-    def stop_sync(self) -> None:
-        self._running = False
-        if self._sync_thread is not None:
-            self._sync_thread.join(timeout=2)
+    payload = json.loads(req.data.decode("utf-8"))
+    assert payload["service"] == "svc"
+    assert payload["node_id"] == coordinator.node_id
+    assert payload["failure_threshold"] == breaker.config.failure_threshold
+    assert payload["success_threshold"] == breaker.config.success_threshold
 
-    def get_cluster_state(self, service: str) -> dict:
-        url = f"{self.coordinator_url}/circuit-breakers/{service}/aggregate"
-        req = urllib.request.Request(url, method="GET")
-        try:
-            resp = urllib.request.urlopen(req, timeout=5)
-            return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.URLError:
-            return {"error": "Failed to fetch cluster state"}
+
+def test_distributed_coordinator_send_registration_swallows_urlerror(coordinator, breaker):
+    """Test _send_registration ignores URLError exceptions."""
+    import urllib.error
+
+    with patch("src.circuit_breaker.urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+        coordinator._send_registration(breaker)
+
+
+def test_distributed_coordinator_synchronize_states_posts_state_for_each_breaker(coordinator, breaker):
+    """Test _synchronize_states posts breaker state payload and includes health_info."""
+    coordinator.register_breaker(breaker)
+
+    with (
+        patch("src.circuit_breaker.urllib.request.urlopen") as mock_urlopen,
+        patch("src.circuit_breaker.time.time", return_value=123.0),
+    ):
+        coordinator._synchronize_states()
+
+    assert mock_urlopen.call_count == 1
+    req = mock_urlopen.call_args.args[0]
+    assert req.full_url == "http://coordinator/circuit-breakers/state"
+    assert req.method == "POST"
+    payload = json.loads(req.data.decode("utf-8"))
+    assert payload["service"] == "svc"
+    assert payload["node_id"] == coordinator.node_id
+    assert payload["state"] == breaker.state.value
+    assert payload["failure_count"] == breaker._failure_count
+    assert payload["timestamp"] == int(123.0 * 1000)
+    assert payload["health_info"]["name"] == "svc"
+
+
+def test_distributed_coordinator_synchronize_states_swallows_urlerror(coordinator, breaker):
+    """Test _synchronize_states ignores URLError per breaker."""
+    import urllib.error
+
+    coordinator.register_breaker(breaker)
+    with patch("src.circuit_breaker.urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+        coordinator._synchronize_states()
+
+
+def test_distributed_coordinator_get_cluster_state_success_returns_json(coordinator):
+    """Test get_cluster_state returns decoded JSON when request succeeds."""
+    fake_response = SimpleNamespace(read=lambda: b'{"ok": true, "value": 1}')
+    with patch("src.circuit_breaker.urllib.request.urlopen", return_value=fake_response) as mock_urlopen:
+        data = coordinator.get_cluster_state("svc")
+
+    assert data == {"ok": True, "value": 1}
+    req = mock_urlopen.call_args.args[0]
+    assert req.full_url == "http://coordinator/circuit-breakers/svc/aggregate"
+    assert req.method == "GET"
+
+
+def test_distributed_coordinator_get_cluster_state_urlerror_returns_error_dict(coordinator):
+    """Test get_cluster_state returns error dict on URLError."""
+    import urllib.error
+
+    with patch("src.circuit_breaker.urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+        data = coordinator.get_cluster_state("svc")
+    assert data == {"error": "Failed to fetch cluster state"}
+
+
+def test_distributed_coordinator_start_sync_starts_thread(coordinator):
+    """Test start_sync sets running and creates/starts a daemon thread."""
+    with patch("src.circuit_breaker.threading.Thread") as mock_thread_cls:
+        mock_thread = Mock()
+        mock_thread_cls.return_value = mock_thread
+
+        coordinator.start_sync()
+
+    assert coordinator._running is True
+    mock_thread_cls.assert_called_once()
+    _, kwargs = mock_thread_cls.call_args
+    assert kwargs["target"] == coordinator._sync_loop
+    assert kwargs["daemon"] is True
+    mock_thread.start.assert_called_once()
+
+
+def test_distributed_coordinator_stop_sync_joins_thread_if_present(coordinator):
+    """Test stop_sync stops running and joins sync thread."""
+    coordinator._running = True
+    coordinator._sync_thread = Mock()
+
+    coordinator.stop_sync()
+
+    assert coordinator._running is False
+    coordinator._sync_thread.join.assert_called_once_with(timeout=2)
+
+
+def test_distributed_coordinator_sync_loop_calls_synchronize_and_sleeps_until_stopped(coordinator):
+    """Test _sync_loop calls _synchronize_states and sleeps; exits when _running becomes False."""
+    calls = {"count": 0}
+
+    def sync_side_effect():
+        calls["count"] += 1
+        coordinator._running = False
+
+    coordinator._running = True
+    coordinator._synchronize_states = Mock(side_effect=sync_side_effect)
+
+    with patch("src.circuit_breaker.time.sleep") as mock_sleep:
+        coordinator._sync_loop()
+
+    assert calls["count"] == 1
+    mock_sleep.assert_called_once_with(coordinator.sync_interval)
+
+
+def test_distributed_coordinator_sync_loop_swallows_exceptions_and_continues(coordinator):
+    """Test _sync_loop ignores exceptions from _synchronize_states."""
+    calls = {"count": 0}
+
+    def sync_side_effect():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("boom")
+        coordinator._running = False
+
+    coordinator._running = True
+    coordinator._synchronize_states = Mock(side_effect=sync_side_effect)
+
+    with patch("src.circuit_breaker.time.sleep") as mock_sleep:
+        coordinator._sync_loop()
+
+    assert calls["count"] == 2
+    assert mock_sleep.call_count == 2
+    mock_sleep.assert_called_with(coordinator.sync_interval)

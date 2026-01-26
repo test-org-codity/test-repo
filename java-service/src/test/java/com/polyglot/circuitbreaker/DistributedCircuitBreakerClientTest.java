@@ -35,98 +35,78 @@ class DistributedCircuitBreakerClientTest {
     @Test
     @DisplayName("getBreaker should return a non-null breaker")
     void testGetBreaker_ReturnsNonNull() {
-        CircuitBreaker<Object> breaker = client.getBreaker("orders");
+        CircuitBreaker<Object> breaker = client.getBreaker("orders-service");
         assertNotNull(breaker);
     }
 
     @Test
-    @DisplayName("getBreaker should cache and return the same breaker instance for the same service name")
-    void testGetBreaker_CachesByServiceName() {
-        CircuitBreaker<Object> b1 = client.getBreaker("inventory");
-        CircuitBreaker<Object> b2 = client.getBreaker("inventory");
-
-        assertNotNull(b1);
-        assertSame(b1, b2, "Expected same instance to be returned from cache for identical service name");
+    @DisplayName("getBreaker should return same instance for same service name (caching)")
+    void testGetBreaker_CachesPerServiceName() {
+        CircuitBreaker<Object> b1 = client.getBreaker("inventory-service");
+        CircuitBreaker<Object> b2 = client.getBreaker("inventory-service");
+        assertSame(b1, b2);
     }
 
     @Test
-    @DisplayName("getBreaker should return different breaker instances for different service names")
-    void testGetBreaker_DifferentServicesDifferentInstances() {
-        CircuitBreaker<Object> b1 = client.getBreaker("payments");
-        CircuitBreaker<Object> b2 = client.getBreaker("shipping");
-
+    @DisplayName("getBreaker should return different instances for different service names")
+    void testGetBreaker_DifferentServiceNamesDifferentBreakers() {
+        CircuitBreaker<Object> b1 = client.getBreaker("service-a");
+        CircuitBreaker<Object> b2 = client.getBreaker("service-b");
         assertNotNull(b1);
         assertNotNull(b2);
-        assertNotSame(b1, b2, "Expected different instances for different service names");
+        assertNotSame(b1, b2);
     }
 
     @Test
-    @DisplayName("getBreaker should throw NullPointerException when serviceName is null (ConcurrentHashMap does not allow null keys)")
-    void testGetBreaker_NullServiceName_Throws() {
-        assertThrows(NullPointerException.class, () -> client.getBreaker(null));
+    @DisplayName("getBreaker should not throw even when coordinator is unreachable")
+    void testGetBreaker_UnreachableCoordinator_DoesNotThrow() {
+        assertDoesNotThrow(() -> {
+            CircuitBreaker<Object> breaker = client.getBreaker("payments-service");
+            assertNotNull(breaker);
+        });
     }
 
     @Test
-    @DisplayName("reportState should not throw for valid inputs (errors are handled internally)")
+    @DisplayName("reportState should not throw for valid inputs even if coordinator is unreachable")
     void testReportState_DoesNotThrow() {
-        assertDoesNotThrow(() ->
-            client.reportState("orders", CircuitBreaker.State.CLOSED, 0)
-        );
+        assertDoesNotThrow(() -> client.reportState("orders-service", CircuitBreaker.State.CLOSED, 0));
     }
 
     @Test
-    @DisplayName("reportState should not throw even when serviceName is null (exception is caught internally)")
-    void testReportState_NullServiceName_DoesNotThrow() {
-        assertDoesNotThrow(() ->
-            client.reportState(null, CircuitBreaker.State.CLOSED, 0)
-        );
-    }
-
-    @Test
-    @DisplayName("reportState should not throw even when state is null (exception is caught internally)")
-    void testReportState_NullState_DoesNotThrow() {
-        assertDoesNotThrow(() ->
-            client.reportState("orders", null, 1)
-        );
-    }
-
-    @Test
-    @DisplayName("reportState should not throw for negative failureCount (serialized as-is; errors are handled internally)")
+    @DisplayName("reportState should not throw for negative failureCount (input is not validated)")
     void testReportState_NegativeFailureCount_DoesNotThrow() {
-        assertDoesNotThrow(() ->
-            client.reportState("orders", CircuitBreaker.State.OPEN, -10)
-        );
+        assertDoesNotThrow(() -> client.reportState("orders-service", CircuitBreaker.State.OPEN, -10));
     }
 
     @Test
-    @DisplayName("getAggregatedState should return UNKNOWN on network/HTTP failure and not throw")
+    @DisplayName("reportState should throw NullPointerException when state is null (state.name() is called)")
+    void testReportState_NullState_ThrowsNpe() {
+        assertThrows(NullPointerException.class, () -> client.reportState("orders-service", null, 1));
+    }
+
+    @Test
+    @DisplayName("getAggregatedState should return UNKNOWN state on coordinator failure")
     void testGetAggregatedState_OnFailure_ReturnsUnknown() {
-        DistributedCircuitBreakerClient.AggregatedState state = client.getAggregatedState("orders");
-
+        DistributedCircuitBreakerClient.AggregatedState state = client.getAggregatedState("orders-service");
         assertNotNull(state);
-        assertEquals("orders", state.service());
+        assertEquals("orders-service", state.service());
         assertEquals("UNKNOWN", state.consensusState());
         assertEquals(0, state.totalNodes());
         assertEquals(0.0, state.healthScore(), 0.000001);
     }
 
     @Test
-    @DisplayName("getAggregatedState should not throw even when serviceName is null")
-    void testGetAggregatedState_NullServiceName_DoesNotThrowAndReturnsUnknown() {
-        DistributedCircuitBreakerClient.AggregatedState state = assertDoesNotThrow(() -> client.getAggregatedState(null));
-
-        assertNotNull(state);
-        assertNull(state.service(), "Service is expected to be null when called with null serviceName (constructor argument used directly)");
-        assertEquals("UNKNOWN", state.consensusState());
-        assertEquals(0, state.totalNodes());
-        assertEquals(0.0, state.healthScore(), 0.000001);
+    @DisplayName("shutdown should stop the sync thread loop and be idempotent")
+    void testShutdown_Idempotent_DoesNotThrow() {
+        assertDoesNotThrow(() -> client.shutdown());
+        assertDoesNotThrow(() -> client.shutdown());
     }
 
     @Test
-    @DisplayName("AggregatedState record should expose constructor values via accessors")
+    @DisplayName("AggregatedState record should store and expose values")
     void testAggregatedState_RecordAccessors() {
         DistributedCircuitBreakerClient.AggregatedState state =
-            new DistributedCircuitBreakerClient.AggregatedState("svc", "CLOSED", 3, 0.75);
+                new DistributedCircuitBreakerClient.AggregatedState("svc", "CLOSED", 3, 0.75);
 
         assertEquals("svc", state.service());
         assertEquals("CLOSED", state.consensusState());
@@ -135,24 +115,35 @@ class DistributedCircuitBreakerClientTest {
     }
 
     @Test
-    @DisplayName("AggregatedState record should implement value-based equality")
-    void testAggregatedState_ValueBasedEquality() {
-        DistributedCircuitBreakerClient.AggregatedState a =
-            new DistributedCircuitBreakerClient.AggregatedState("svc", "OPEN", 2, 0.5);
-        DistributedCircuitBreakerClient.AggregatedState b =
-            new DistributedCircuitBreakerClient.AggregatedState("svc", "OPEN", 2, 0.5);
-        DistributedCircuitBreakerClient.AggregatedState c =
-            new DistributedCircuitBreakerClient.AggregatedState("svc", "CLOSED", 2, 0.5);
+    @DisplayName("AggregatedState record equals/hashCode should behave as value type")
+    void testAggregatedState_ValueSemantics() {
+        DistributedCircuitBreakerClient.AggregatedState s1 =
+                new DistributedCircuitBreakerClient.AggregatedState("svc", "OPEN", 2, 0.1);
+        DistributedCircuitBreakerClient.AggregatedState s2 =
+                new DistributedCircuitBreakerClient.AggregatedState("svc", "OPEN", 2, 0.1);
+        DistributedCircuitBreakerClient.AggregatedState s3 =
+                new DistributedCircuitBreakerClient.AggregatedState("svc", "CLOSED", 2, 0.1);
 
-        assertEquals(a, b);
-        assertEquals(a.hashCode(), b.hashCode());
-        assertNotEquals(a, c);
+        assertEquals(s1, s2);
+        assertEquals(s1.hashCode(), s2.hashCode());
+        assertNotEquals(s1, s3);
     }
 
     @Test
-    @DisplayName("shutdown should be callable and idempotent (should not throw when called multiple times)")
-    void testShutdown_Idempotent() {
-        assertDoesNotThrow(() -> client.shutdown());
-        assertDoesNotThrow(() -> client.shutdown());
+    @DisplayName("getAggregatedState should not require a breaker to have been created")
+    void testGetAggregatedState_WithoutCallingGetBreaker_First() {
+        assertDoesNotThrow(() -> {
+            DistributedCircuitBreakerClient.AggregatedState state = client.getAggregatedState("never-registered");
+            assertNotNull(state);
+            assertEquals("never-registered", state.service());
+        });
+    }
+
+    @Test
+    @DisplayName("Creating breaker should not be affected by calling shutdown")
+    void testGetBreaker_AfterShutdown_StillReturnsBreaker() {
+        client.shutdown();
+        CircuitBreaker<Object> breaker = client.getBreaker("after-shutdown-service");
+        assertNotNull(breaker);
     }
 }

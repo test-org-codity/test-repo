@@ -1,11 +1,11 @@
-import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals'
-jest.mock('date-fns', () => ({
-  ...jest.requireActual('date-fns'),
-  let actual = {}
+import { describe, it, expect, jest, afterEach } from '@jest/globals'
+
+jest.mock('date-fns', () => {
+  let actual: any = {}
   try {
     actual = jest.requireActual('date-fns')
   } catch {
-    // ignore if actual cannot be resolved; we only need to provide the mocked API
+    // ignore if actual cannot be resolved
   }
   return {
     ...actual,
@@ -14,13 +14,12 @@ jest.mock('date-fns', () => ({
   }
 })
 
-jest.mock('react-use', () => ({
-  ...jest.requireActual('react-use'),
-  let actual = {}
+jest.mock('react-use', () => {
+  let actual: any = {}
   try {
     actual = jest.requireActual('react-use')
   } catch {
-    // ignore if actual cannot be resolved; we only need to provide the mocked API
+    // ignore if actual cannot be resolved
   }
   return {
     ...actual,
@@ -28,22 +27,21 @@ jest.mock('react-use', () => ({
   }
 })
 
-jest.mock('@/config/redis', () => ({
-  ...jest.requireActual('@/config/redis'),
-  let actual = {}
+jest.mock('@/config/redis', () => {
+  let actual: any = {}
   try {
     actual = jest.requireActual('@/config/redis')
   } catch {
-    // ignore if actual cannot be resolved; we only need to provide the mocked API
+    // ignore if actual cannot be resolved
   }
-  const store = {}
+  const store: Record<string, string> = {}
   const client = {
-    get: jest.fn(async (key) => (Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null)),
-    set: jest.fn(async (key, value) => {
+    get: jest.fn(async (key: string) => (Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null)),
+    set: jest.fn(async (key: string, value: string) => {
       store[key] = value
       return 'OK'
     }),
-    del: jest.fn(async (key) => {
+    del: jest.fn(async (key: string) => {
       const existed = Object.prototype.hasOwnProperty.call(store, key) ? 1 : 0
       delete store[key]
       return existed

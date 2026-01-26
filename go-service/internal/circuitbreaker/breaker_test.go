@@ -141,10 +141,12 @@ func TestCircuitBreaker_HalfOpen_MaxCallsLimit(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, StateHalfOpen, cb.State())
 
-	// Second concurrent call should be rejected due to max calls limit
+	// Second call should be rejected due to max calls limit.
+	// Guard Contains() on non-nil error to avoid nil-pointer dereference on failure.
 	err = cb.Execute(context.Background(), func() error { return nil })
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "is open")
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "is open")
+	}
 	assert.Equal(t, uint64(1), atomic.LoadUint64(&cb.metrics.RejectedCalls))
 }
 

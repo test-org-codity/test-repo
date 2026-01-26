@@ -83,4 +83,30 @@ describe('external dependency mocks behave deterministically', () => {
 })
 
 describe('redis client behavior (mocked)', () => {
+  it('supports set/get/del/quit with deterministic behavior', async () => {
+    const client = await getRedisClient()
+
+    const setResult1 = await client.set('foo', 'bar')
+    expect(setResult1).toBe('OK')
+
+    const getResult1 = await client.get('foo')
+    expect(getResult1).toBe('bar')
+
+    const delCount1 = await client.del('foo')
+    expect(delCount1).toBe(1)
+
+    const getResult2 = await client.get('foo')
+    expect(getResult2).toBeNull()
+
+    const delCount2 = await client.del('foo')
+    expect(delCount2).toBe(0)
+
+    const quitResult = await client.quit()
+    expect(quitResult).toBe('OK')
+
+    expect(client.set).toHaveBeenCalled()
+    expect(client.get).toHaveBeenCalled()
+    expect(client.del).toHaveBeenCalled()
+    expect(client.quit).toHaveBeenCalled()
+  })
 })

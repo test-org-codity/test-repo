@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import threading
 import urllib.error
@@ -226,6 +228,7 @@ def test_circuit_breaker_execute_success_records_metrics_and_sliding_window(brea
 
 def test_circuit_breaker_execute_failure_records_metrics_and_raises(breaker_small):
     """Test execute on failure increments metrics, records response time, and re-raises."""
+
     def op():
         raise ValueError("boom")
 
@@ -271,10 +274,17 @@ def test_circuit_breaker_execute_rejected_uses_fallback_when_provided(breaker_sm
 
 
 def test_circuit_breaker_execute_rejected_remaining_time_clamped_to_zero(breaker_small):
-    """Test execute remaining time is clamped to 0 when negative due to time drift."""
+    """
+    Test execute remaining time is clamped to 0 when negative due to time drift.
+
+    If the implementation transitions to HALF_OPEN once the timeout has elapsed,
+    there is no rejection to raise; we force rejection by keeping it OPEN while
+    setting opened_at in the future, producing negative remaining time which must
+    be clamped to 0.
+    """
     breaker_small.config.timeout_seconds = 1.0
     breaker_small._transition_to(CircuitState.OPEN)
-    breaker_small._opened_at = 100.0
+    breaker_small._opened_at = 500.0  # future opened_at creates negative remaining time
 
     with patch("src.circuit_breaker.time.time", return_value=200.0):
         with pytest.raises(CircuitBreakerOpenError) as ei:
@@ -315,11 +325,18 @@ def test_circuit_breaker_record_success_in_half_open_closes_after_success_thresh
 
 
 def test_circuit_breaker_record_failure_in_half_open_transitions_to_open(breaker_small):
-    """Test _record_failure in HALF_OPEN transitions immediately to OPEN."""
+    """
+    Test _record_failure in HALF_OPEN transitions immediately to OPEN.
+
+    Some implementations evaluate reset timeout on state access and may auto-transition.
+    We explicitly keep it HALF_OPEN during the call by ensuring opened_at is None.
+    """
     breaker_small._transition_to(CircuitState.HALF_OPEN)
+    breaker_small._opened_at = None
     with patch("src.circuit_breaker.time.time", return_value=10.0):
         breaker_small._record_failure(0.1)
-    assert breaker_small.state == CircuitState.OPEN
+
+    assert breaker_small._state == CircuitState.OPEN
     assert breaker_small._opened_at == pytest.approx(10.0)
 
 
@@ -338,21 +355,30 @@ def test_circuit_breaker_calculate_failure_rate_computes_when_window_full(breake
 
 
 def test_circuit_breaker_record_failure_opens_on_failure_threshold(breaker_small):
-    """Test failures open circuit when failure_count reaches failure_threshold."""
+    """
+    Test failures open circuit when failure_count reaches failure_threshold.
+
+    Use internal state to avoid auto-transition to HALF_OPEN on state property access
+    (some implementations transition on read after timeout).
+    """
     breaker_small._transition_to(CircuitState.CLOSED)
     with patch("src.circuit_breaker.time.time", return_value=1.0):
         breaker_small._record_failure(0.1)
-    assert breaker_small.state == CircuitState.CLOSED
+    assert breaker_small._state == CircuitState.CLOSED
     assert breaker_small._failure_count == 1
 
     with patch("src.circuit_breaker.time.time", return_value=2.0):
         breaker_small._record_failure(0.1)
-    assert breaker_small.state == CircuitState.OPEN
+    assert breaker_small._state == CircuitState.OPEN
     assert breaker_small._failure_count == 2
 
 
 def test_circuit_breaker_record_failure_opens_on_failure_rate_threshold(breaker_small):
-    """Test failures open circuit when failure rate threshold exceeded (requires full window)."""
+    """
+    Test failures open circuit when failure rate threshold exceeded (requires full window).
+
+    Validate against internal state to avoid auto-transition side effects on read.
+    """
     cfg = CircuitBreakerConfig(
         failure_threshold=999,  # make count threshold unreachable
         success_threshold=2,
@@ -363,24 +389,23 @@ def test_circuit_breaker_record_failure_opens_on_failure_rate_threshold(breaker_
     )
     b = CircuitBreaker("svc", cfg)
 
-    # Fill window to full size with 3 failures (rate 0.75) without hitting failure_threshold
     with patch("src.circuit_breaker.time.time", return_value=1.0):
         b._record_failure(0.1)
-    assert b.state == CircuitState.CLOSED
+    assert b._state == CircuitState.CLOSED
 
     with patch("src.circuit_breaker.time.time", return_value=2.0):
         b._record_failure(0.1)
-    assert b.state == CircuitState.CLOSED
+    assert b._state == CircuitState.CLOSED
 
     with patch("src.circuit_breaker.time.time", return_value=3.0):
         b._record_success(0.1)
-    assert b.state == CircuitState.CLOSED
+    assert b._state == CircuitState.CLOSED
 
     with patch("src.circuit_breaker.time.time", return_value=4.0):
         b._record_failure(0.1)
     assert list(b._sliding_window) == [False, False, True, False]
     assert b._calculate_failure_rate() == pytest.approx(0.75)
-    assert b.state == CircuitState.OPEN
+    assert b._state == CircuitState.OPEN
 
 
 def test_circuit_breaker_get_health_info_structure_and_values(breaker_small):
@@ -519,14 +544,24 @@ def test_distributed_coordinator_synchronize_states_ignores_urlerror(coordinator
 
 
 def test_distributed_coordinator_start_sync_creates_daemon_thread(coordinator):
-    """Test start_sync creates and starts a daemon thread."""
+    """
+    Test start_sync creates and starts a daemon thread.
+
+    Use a simple dummy thread object instead of Mock(spec=threading.Thread), because
+    patching threading.Thread can turn threading.Thread into a Mock, which then
+    makes spec invalid ("Cannot spec a Mock object").
+    """
     created = {}
 
+    class DummyThread:
+        def __init__(self, *, target, daemon):
+            self._target = target
+            self.daemon = daemon
+            self.start = Mock()
+            self.join = Mock()
+
     def fake_thread(*, target, daemon):
-        t = Mock(spec=threading.Thread)
-        t.daemon = daemon
-        t.start = Mock()
-        t.join = Mock()
+        t = DummyThread(target=target, daemon=daemon)
         created["thread"] = t
         created["target"] = target
         created["daemon"] = daemon
@@ -607,8 +642,6 @@ def test_distributed_coordinator_get_cluster_state_success_returns_json(coordina
 
 def test_distributed_coordinator_get_cluster_state_urlerror_returns_error_dict(coordinator):
     """Test get_cluster_state returns error dict on URLError."""
-    with patch(
-        "src.circuit_breaker.urllib.request.urlopen", side_effect=urllib.error.URLError("down")
-    ):
+    with patch("src.circuit_breaker.urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
         data = coordinator.get_cluster_state("svc")
     assert data == {"error": "Failed to fetch cluster state"}

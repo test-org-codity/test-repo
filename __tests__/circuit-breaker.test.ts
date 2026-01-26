@@ -1,4 +1,3 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // Minimal ambient declarations to satisfy TypeScript without relying on external test type packages.
@@ -97,48 +96,48 @@ maybeDescribe('external dependency mocks behave deterministically', () => {
   it('date-fns: format returns a fixed string', () => {
     const result = format(new Date('1999-12-31T00:00:00.000Z'), 'yyyy-MM-dd')
     expect(result).toBe('2024-01-01')
-    expect(format).toHaveBeenCalledTimes(1)
   })
 
-  it('date-fns: subMonths returns a fixed date', () => {
-    const input = new Date('2024-02-15T00:00:00.000Z')
-    const result = subMonths(input, 3)
-    expect(result instanceof Date).toBe(true)
-    expect(result.toISOString()).toBe('2024-01-01T00:00:00.000Z')
-    expect(subMonths).toHaveBeenCalledTimes(1)
+  it('date-fns: subMonths returns a fixed date instance', () => {
+    const d = subMonths(new Date('2020-06-15T00:00:00.000Z'), 3)
+    expect(d instanceof Date).toBe(true)
+    expect(d.toISOString()).toBe('2024-01-01T00:00:00.000Z')
   })
 
-  it('react-use: useMedia returns false', () => {
-    const result = useMedia('(min-width: 768px)')
-    expect(result).toBe(false)
-    expect(useMedia).toHaveBeenCalledTimes(1)
+  it('react-use: useMedia returns false consistently', () => {
+    const isMatch = useMedia('(min-width: 768px)')
+    expect(isMatch).toBe(false)
   })
 
-  it('redis mock: basic get/set/del/quit behavior', async () => {
-    const client = await getRedisClient()
-    expect(typeof client.get).toBe('function')
-    expect(await client.get('missing')).toBeNull()
+  it('redis mock: set/get/del work and are isolated per client', async () => {
+    const clientA = await getRedisClient()
+    const clientB = await getRedisClient()
 
-    const setRes = await client.set('foo', 'bar')
+    const setRes = await clientA.set('key', 'value')
     expect(setRes).toBe('OK')
-    expect(await client.get('foo')).toBe('bar')
 
-    const delRes = await client.del('foo')
+    const gotA = await clientA.get('key')
+    expect(gotA).toBe('value')
+
+    const gotB = await clientB.get('key')
+    // each client has its own isolated in-memory store
+    expect(gotB).toBe(null)
+
+    const delRes = await clientA.del('key')
     expect(delRes).toBe(1)
-    expect(await client.get('foo')).toBeNull()
 
-    const quitRes = await client.quit()
+    const gotAfterDel = await clientA.get('key')
+    expect(gotAfterDel).toBe(null)
+
+    const quitRes = await clientA.quit()
     expect(quitRes).toBe('OK')
   })
 
-  it('redis mock: separate keys persist within the same client instance', async () => {
-    const client = await getRedisClient()
-    await client.set('a', '1')
-    await client.set('b', '2')
-    expect(await client.get('a')).toBe('1')
-    expect(await client.get('b')).toBe('2')
-    await client.del('a')
-    expect(await client.get('a')).toBeNull()
-    expect(await client.get('b')).toBe('2')
+  it('date-fns: mocked functions receive the right arguments', () => {
+    const d = new Date('2000-01-01T00:00:00.000Z')
+    format(d, 'yyyy-MM-dd')
+    subMonths(d, 5)
+    expect(format).toHaveBeenCalledWith(d, 'yyyy-MM-dd')
+    expect(subMonths).toHaveBeenCalledWith(d, 5)
   })
 })

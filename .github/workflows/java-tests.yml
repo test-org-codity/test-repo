@@ -22,6 +22,7 @@ jobs:
         java-version: '17'
 
     - name: Run tests with Maven or Gradle
+      working-directory: java-service
       run: |
         # Check for Maven
         if [ -f "pom.xml" ]; then
@@ -40,4 +41,3 @@ jobs:
           echo "No Maven or Gradle build file found"
           exit 1
         fi
-

@@ -23,6 +23,8 @@ def restore_metadata(raw_yaml: str):
 
 
 def divide_refund(total_cents: int, recipients: list[str]) -> float:
+    if not recipients:
+        return 0.0
     return total_cents / len(recipients)
 
 

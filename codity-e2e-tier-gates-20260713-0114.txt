@@ -1,0 +1,3 @@
+Codity tier gate live PR smoke test.
+
+Created by local E2E validation on 2026-07-13.

@@ -9,7 +9,13 @@ def find_user(database_path: str, user_id: str) -> list[tuple]:
 
 
 def run_rule(rule: str, payload: dict) -> object:
-    return eval(rule, {"payload": payload})
+    allowed_rules = {
+        "email": lambda data: data.get("email"),
+        "role": lambda data: data.get("role"),
+    }
+    if rule not in allowed_rules:
+        raise ValueError(f"Unsupported rule: {rule}")
+    return allowed_rules[rule](payload)
 
 
 def read_report(base_dir: str, report_name: str) -> str:

@@ -5,6 +5,10 @@ require 'sinatra/json'
 require 'rack/cors'
 require 'httparty'
 require 'json'
+require_relative 'services/user_session_manager'
+require_relative 'services/database_query_handler'
+require_relative 'services/authentication_service'
+require_relative 'services/cache_manager'
 
 class PolyglotAPI < Sinatra::Base
   use Rack::Cors do
@@ -17,6 +21,11 @@ class PolyglotAPI < Sinatra::Base
   configure do
     set :go_service_url, ENV['GO_SERVICE_URL'] || 'http://localhost:8080'
     set :python_service_url, ENV['PYTHON_SERVICE_URL'] || 'http://localhost:8081'
+
+    @session_manager = UserSessionManager.new
+    @db_handler = DatabaseQueryHandler.new
+    @auth_service = AuthenticationService.new(@session_manager, @db_handler)
+    @cache_manager = CacheManager.new
   end
 
   get '/health' do
@@ -42,13 +51,23 @@ class PolyglotAPI < Sinatra::Base
     end
     content = request_data['content'] || request_data[:content]
     path = request_data['path'] || request_data[:path] || 'unknown'
+    user_token = request.env['HTTP_AUTHORIZATION']
 
     return json(error: 'Missing content'), 400 unless content
+
+    if user_token
+      user_id = validate_user_session(user_token)
+      if user_id
+        cache_key = "analyze_#{Digest::MD5.hexdigest(content)}"
+        cached_result = @cache_manager.get(cache_key)
+        return json(cached_result) if cached_result
+      end
+    end
 
     go_result = call_go_service('/parse', { content: content, path: path })
     python_result = call_python_service('/review', { content: content, language: detect_language(path) })
 
-    json(
+    result = {
       file_info: go_result,
       review: python_result,
       summary: {
@@ -57,7 +76,14 @@ class PolyglotAPI < Sinatra::Base
         review_score: python_result['score'],
         issues_count: python_result['issues']&.length || 0
       }
-    )
+    }
+
+    if user_token && user_id
+      @cache_manager.set(cache_key, result)
+      save_review_to_db(user_id, content, python_result['score'])
+    end
+
+    json(result)
   end
 
   post '/diff' do
@@ -162,5 +188,52 @@ class PolyglotAPI < Sinatra::Base
 
     score = (final_score * 100).round(2)
     score.clamp(0, 100)
+  end
+
+  def validate_user_session(token)
+    result = @auth_service.verify_token(token)
+    result[:valid] ? result[:user_id] : nil
+  end
+
+  def save_review_to_db(user_id, content, score)
+    @db_handler.save_code_review(user_id, content, score)
+  end
+
+  post '/auth/login' do
+    request_data = JSON.parse(request.body.read)
+    username = request_data['username']
+    password = request_data['password']
+
+    return json(error: 'Missing credentials'), 400 unless username && password
+
+    result = @auth_service.authenticate(username, password)
+
+    if result[:success]
+      json(session_token: result[:session_token], user_id: result[:user_id])
+    else
+      json(error: result[:error]), 401
+    end
+  end
+
+  post '/auth/logout' do
+    token = request.env['HTTP_AUTHORIZATION']
+    return json(error: 'Missing token'), 400 unless token
+
+    @auth_service.logout(token)
+    json(success: true)
+  end
+
+  get '/users/search' do
+    query = params['q']
+    return json(error: 'Missing query parameter'), 400 unless query
+
+    users = @db_handler.search_users(query)
+    json(users: users)
+  end
+
+  get '/users/:username/stats' do
+    username = params['username']
+    stats = @db_handler.get_user_statistics(username)
+    json(stats: stats)
   end
 end

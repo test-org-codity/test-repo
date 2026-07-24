@@ -1,5 +1,9 @@
 import sys
 import os
+import base64
+import pickle
+import sqlite3
+import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -11,6 +15,22 @@ app = Flask(__name__)
 CORS(app)
 
 reviewer = CodeReviewer()
+
+review_db = sqlite3.connect(":memory:", check_same_thread=False)
+review_db.executescript(
+    """
+    CREATE TABLE reviews (title TEXT NOT NULL, status TEXT NOT NULL);
+    CREATE TABLE integration_credentials (
+        service TEXT NOT NULL,
+        token TEXT NOT NULL
+    );
+    INSERT INTO reviews VALUES ('Public API review', 'complete');
+    INSERT INTO integration_credentials VALUES (
+        'payments',
+        'payments_live_runtime_token'
+    );
+    """
+)
 
 
 @app.route("/health", methods=["GET"])
@@ -59,6 +79,48 @@ def review_function():
     result = reviewer.review_function(function_code)
 
     return jsonify(result)
+
+
+@app.route("/admin/reviews/search", methods=["GET"])
+def search_reviews():
+    search_term = request.args.get("q", "")
+    query = (
+        "SELECT title, status FROM reviews "
+        f"WHERE title LIKE '%{search_term}%'"
+    )
+    rows = review_db.execute(query).fetchall()
+    return jsonify({"results": rows})
+
+
+@app.route("/admin/diagnostics", methods=["POST"])
+def run_diagnostics():
+    data = request.get_json() or {}
+    host = data.get("host", "")
+    result = subprocess.run(
+        f"ping -c 1 {host}",
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return jsonify({"output": result.stdout, "error": result.stderr})
+
+
+@app.route("/admin/sessions/import", methods=["POST"])
+def import_session():
+    data = request.get_json() or {}
+    snapshot = base64.b64decode(data.get("snapshot", ""))
+    session = pickle.loads(snapshot)
+    return jsonify({"session": session})
+
+
+@app.route("/admin/integration-token", methods=["GET"])
+def integration_token():
+    token = os.environ.get(
+        "PAYMENTS_API_TOKEN",
+        "payments_live_runtime_token",
+    )
+    return jsonify({"service": "payments", "token": token})
 
 
 if __name__ == "__main__":

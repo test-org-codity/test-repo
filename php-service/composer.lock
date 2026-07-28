@@ -1,0 +1,75 @@
+{
+  "_readme": [
+    "This lockfile is a fixture for Codity PHP scan coverage.",
+    "It intentionally includes legacy Composer packages and license metadata."
+  ],
+  "content-hash": "fixture-lockfile-for-codity-php-scan-coverage",
+  "packages": [
+    {
+      "name": "symfony/http-foundation",
+      "version": "v2.7.0",
+      "license": [
+        "MIT"
+      ]
+    },
+    {
+      "name": "guzzlehttp/guzzle",
+      "version": "6.3.0",
+      "license": [
+        "MIT"
+      ]
+    },
+    {
+      "name": "monolog/monolog",
+      "version": "1.17.2",
+      "license": [
+        "MIT"
+      ]
+    },
+    {
+      "name": "tecnickcom/tcpdf",
+      "version": "6.2.13",
+      "license": [
+        "LGPL-3.0-only"
+      ]
+    }
+  ],
+  "packages-dev": [
+    {
+      "name": "phpunit/phpunit",
+      "version": "v5.7.27",
+      "license": [
+        "BSD-3-Clause"
+      ]
+    },
+    {
+      "name": "phpstan/phpstan",
+      "version": "1.10.15",
+      "license": [
+        "MIT"
+      ]
+    },
+    {
+      "name": "vimeo/psalm",
+      "version": "5.15.0",
+      "license": [
+        "MIT"
+      ]
+    },
+    {
+      "name": "squizlabs/php_codesniffer",
+      "version": "3.7.2",
+      "license": [
+        "BSD-3-Clause"
+      ]
+    }
+  ],
+  "aliases": [],
+  "minimum-stability": "stable",
+  "stability-flags": {},
+  "prefer-stable": false,
+  "prefer-lowest": false,
+  "platform": {},
+  "platform-dev": {},
+  "plugin-api-version": "2.6.0"
+}

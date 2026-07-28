@@ -207,6 +207,35 @@ app.all('/api/go/*', (req: Request, res: Response) => proxyRequest(req, res, 'go
 app.all('/api/python/*', (req: Request, res: Response) => proxyRequest(req, res, 'python'));
 app.all('/api/ruby/*', (req: Request, res: Response) => proxyRequest(req, res, 'ruby'));
 
+// New direct review endpoint — calls python-service /review/v2 and maps new response shape.
+// NOTE: ruby-service /analyze still calls python-service /review (old endpoint, now 404).
+// NOTE: ruby-service reads `result.score` and `result.issues` — both removed in v2.
+app.post('/api/review', async (req: Request, res: Response) => {
+  try {
+    const result = await serviceClient.proxyRequest('python', 'POST', '/review/v2', req.body) as {
+      review_id: string;
+      quality_score: number;
+      findings: Array<{ rule_id: string; severity: string; line: number; message: string; fix: string }>;
+      suggestions: string[];
+      metadata: { language: string; complexity_score: number };
+    };
+
+    const findings = Array.isArray(result.findings) ? result.findings : [];
+    res.json({
+      success: true,
+      review_id: result.review_id,
+      quality_score: result.quality_score,
+      finding_count: findings.length,
+      high_severity: findings.filter(f => f.severity === 'high').length,
+      suggestions: result.suggestions,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: unknown) {
+    const status = (error as { status?: number })?.status || 500;
+    res.status(status).json({ success: false, error: (error as { message?: string })?.message });
+  }
+});
+
 // Error handling
 app.use((req: Request, res: Response) => {
   res.status(404).json({

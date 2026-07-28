@@ -88,6 +88,28 @@ jobs:
           fi
         displayName: 'Run Ruby Tests'
 
+  - job: QuickPhpFixtures
+    displayName: 'Quick PHP Fixture Logs'
+    condition: or(contains(variables['Build.SourceBranch'], 'codity'), eq(variables['Build.Reason'], 'PullRequest'))
+    steps:
+      - script: |
+          echo "Emitting fixture PHP scan logs..."
+          if [ -d "php-service" ]; then
+            cd php-service
+            echo '$ composer audit --format=json'
+            cat ci-fixtures/composer-audit.json
+            echo '$ phpstan analyse --error-format=json'
+            cat ci-fixtures/phpstan.json
+            echo '$ psalm --output-format=json'
+            cat ci-fixtures/psalm.json
+            echo '$ phpcs --report=json'
+            cat ci-fixtures/phpcs.json
+          else
+            echo "php-service directory not found"
+            exit 1
+          fi
+        displayName: 'Emit PHP fixture logs'
+
   - job: QuickJavaScriptTests
     displayName: 'Quick JavaScript/TypeScript Tests'
     condition: or(contains(variables['Build.SourceBranch'], 'codity'), eq(variables['Build.Reason'], 'PullRequest'))

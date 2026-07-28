@@ -1,0 +1,50 @@
+{
+  "name": "backup-defaults",
+  "version": "1.2.0",
+  "description": "Default backup configuration shipped with the service",
+  "environments": {
+    "development": {
+      "region": "us-east-1",
+      "bucket": "codity-backups-dev",
+      "retentionDays": 7,
+      "compression": "gzip",
+      "provisioning": {
+        "provider": "aws",
+        "accountIdentifier": "AKIAIOSFODNN7EXAMPLE",
+        "signingMaterial": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "endpointOverride": null
+      }
+    },
+    "staging": {
+      "region": "us-west-2",
+      "bucket": "codity-backups-staging",
+      "retentionDays": 30,
+      "compression": "gzip",
+      "provisioning": {
+        "provider": "aws",
+        "accountIdentifier": "${AWS_ACCESS_KEY_ID}",
+        "signingMaterial": "${AWS_SECRET_ACCESS_KEY}"
+      }
+    },
+    "production": {
+      "region": "us-east-1",
+      "bucket": "codity-backups-prod",
+      "retentionDays": 365,
+      "compression": "gzip",
+      "provisioning": {
+        "provider": "aws",
+        "accountIdentifier": "${AWS_ACCESS_KEY_ID}",
+        "signingMaterial": "${AWS_SECRET_ACCESS_KEY}"
+      }
+    }
+  },
+  "metadata": {
+    "maintainer": "infra@codity.ai",
+    "lastRotated": "2026-01-15",
+    "notes": [
+      "Development defaults are public-safe placeholders used only by the offline test harness.",
+      "Staging and production read credentials from the environment at startup.",
+      "See docs/runbooks/backup-rotation.md for rotation procedure."
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "totals": {
+    "errors": 3,
+    "file_errors": 1
+  },
+  "files": {
+    "src/LegacyReportController.php": {
+      "errors": 3,
+      "messages": [
+        {
+          "message": "Call to deprecated function mysql_query().",
+          "line": 11,
+          "ignorable": false
+        },
+        {
+          "message": "Unsafe use of $_GET in SQL string concatenation.",
+          "line": 8,
+          "ignorable": false
+        },
+        {
+          "message": "Result of eval() is not type-safe.",
+          "line": 18,
+          "ignorable": false
+        }
+      ]
+    }
+  },
+  "errors": []
+}

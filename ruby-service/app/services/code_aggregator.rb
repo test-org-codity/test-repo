@@ -49,7 +49,7 @@ class CodeAggregator
   def review_with_python(content, path = nil)
     language = path ? detect_language(path) : 'unknown'
     response = HTTParty.post(
-      "#{@python_service_url}/review",
+      "#{@python_service_url}/review/v2",
       body: { content: content, language: language }.to_json,
       headers: { 'Content-Type' => 'application/json' }
     )
@@ -75,13 +75,13 @@ class CodeAggregator
 
     return { error: 'Could not calculate improvement' } if old_review['error'] || new_review['error']
 
-    old_score = old_review['score'] || 0
-    new_score = new_review['score'] || 0
+    old_score = old_review['quality_score'] || 0
+    new_score = new_review['quality_score'] || 0
 
     {
       score_delta: (new_score - old_score).round(2),
       improvement_percentage: old_score.positive? ? (((new_score - old_score) / old_score) * 100).round(2) : 0,
-      issues_reduced: (old_review['issues']&.length || 0) - (new_review['issues']&.length || 0)
+      issues_reduced: (old_review['findings']&.length || 0) - (new_review['findings']&.length || 0)
     }
   end
 

@@ -1,5 +1,6 @@
 import sys
 import os
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -18,7 +19,10 @@ def health_check():
     return jsonify({"status": "healthy", "service": "python-reviewer"})
 
 
-@app.route("/review", methods=["POST"])
+# Renamed /review → /review/v2 and changed response shape.
+# Old response: { score, issues: [{severity, line, message, suggestion}], complexity_score }
+# New response: { review_id, quality_score, findings: [{rule_id, severity, line, message, fix}], metadata }
+@app.route("/review/v2", methods=["POST"])
 def review_code():
     data = request.get_json()
 
@@ -32,18 +36,23 @@ def review_code():
 
     return jsonify(
         {
-            "score": result.score,
-            "issues": [
+            "review_id": str(uuid.uuid4()),
+            "quality_score": result.score,
+            "findings": [
                 {
+                    "rule_id": f"PY{i:04d}",
                     "severity": issue.severity,
                     "line": issue.line,
                     "message": issue.message,
-                    "suggestion": issue.suggestion,
+                    "fix": issue.suggestion,
                 }
-                for issue in result.issues
+                for i, issue in enumerate(result.issues)
             ],
             "suggestions": result.suggestions,
-            "complexity_score": result.complexity_score,
+            "metadata": {
+                "language": language,
+                "complexity_score": result.complexity_score,
+            },
         }
     )
 

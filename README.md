@@ -1,15 +1,16 @@
 # Polyglot Codebase - Multi-Language Code Review System
 
-A sophisticated multi-language microservices application built with **Go**, **Python**, **Ruby**, and **TypeScript** that provides comprehensive code analysis, review, and metrics calculation.
+A sophisticated multi-language microservices application built with **Go**, **Python**, **Ruby**, **PHP**, and **TypeScript** that provides comprehensive code analysis, review, and metrics calculation.
 
 ## Architecture
 
-This project consists of four microservices:
+This project consists of five microservices:
 
 1. **Go Service** (`go-service/`) - Fast code parsing, diff analysis, and metrics calculation
 2. **Python Service** (`python-service/`) - AI-powered code review with pattern detection and quality scoring
 3. **Ruby Service** (`ruby-service/`) - Web API aggregator that orchestrates the other services
-4. **JS/TS Service** (`js-service/`) - API Gateway with request routing, rate limiting, and service health monitoring
+4. **PHP Service** (`php-service/`) - Composer fixture service with legacy dependencies and intentionally unsafe patterns for scanner validation
+5. **JS/TS Service** (`js-service/`) - API Gateway with request routing, rate limiting, and service health monitoring
 
 ## Features
 
@@ -18,6 +19,7 @@ This project consists of four microservices:
 - **Code Metrics**: Lines of code, complexity, functions, classes analysis
 - **Code Review**: Automated code review with issue detection
 - **Quality Scoring**: Overall code quality scoring based on multiple factors
+- **PHP Scan Coverage**: Composer dependency, license, and CI-log fixtures for PHP integration testing
 - **RESTful APIs**: Clean REST APIs for all services
 - **CI/CD**: Complete GitHub Actions workflows for all languages
 
@@ -38,6 +40,11 @@ polyglot-codebase/
 │   ├── app/            # Application code
 │   ├── spec/           # RSpec tests
 │   └── Gemfile
+├── php-service/         # PHP fixture service
+│   ├── public/         # Built-in server entrypoint
+│   ├── src/            # Legacy PHP code patterns
+│   ├── composer.json   # Composer manifest
+│   └── composer.lock   # Composer lockfile with license metadata
 ├── js-service/          # TypeScript API Gateway
 │   ├── src/            # TypeScript source code
 │   ├── package.json    # Node.js dependencies
@@ -53,6 +60,7 @@ polyglot-codebase/
 - Go 1.21+
 - Python 3.10+
 - Ruby 3.2+
+- PHP 8.2+ and Composer 2.x
 - Node.js 20+ and npm
 - Docker and Docker Compose (optional)
 
@@ -111,6 +119,11 @@ docker-compose up --build
 - `POST /analyze` - Full code analysis (aggregates Go + Python)
 - `POST /diff` - Diff analysis with review
 - `POST /metrics` - Metrics with quality score
+
+### PHP Service (Port 8084)
+
+- `GET /` - Render legacy report output using request parameters
+- `GET /?filter=legacy&summary=...` - Exercise intentionally unsafe PHP patterns for scanner validation
 
 ### JS/TS API Gateway (Port 8083)
 
@@ -178,6 +191,13 @@ cd ruby-service
 bundle exec rspec spec/
 ```
 
+### PHP Fixture Checks
+
+```bash
+php -l php-service/public/index.php
+php -l php-service/src/LegacyReportController.php
+```
+
 ## Development
 
 ### Adding New Features
@@ -191,6 +211,7 @@ bundle exec rspec spec/
 - **Go**: Follow standard Go conventions, use `golangci-lint`
 - **Python**: Follow PEP 8, use `black` for formatting
 - **Ruby**: Follow Ruby style guide, use `rubocop`
+- **PHP**: Keep the fixture intentionally legacy and scan-heavy so PHP integrations have stable validation data
 - **TypeScript**: Follow TypeScript best practices, use `eslint` for linting
 
 ## License

@@ -46,7 +46,7 @@ class PolyglotAPI < Sinatra::Base
     return json(error: 'Missing content'), 400 unless content
 
     go_result = call_go_service('/parse', { content: content, path: path })
-    python_result = call_python_service('/review', { content: content, language: detect_language(path) })
+    python_result = call_python_service('/review/v2', { content: content, language: detect_language(path) })
 
     json(
       file_info: go_result,
@@ -54,8 +54,8 @@ class PolyglotAPI < Sinatra::Base
       summary: {
         language: go_result['language'],
         lines: go_result['lines']&.length || 0,
-        review_score: python_result['score'],
-        issues_count: python_result['issues']&.length || 0
+        review_score: python_result['quality_score'],
+        issues_count: python_result['findings']&.length || 0
       }
     )
   end
@@ -74,7 +74,7 @@ class PolyglotAPI < Sinatra::Base
     return json(error: 'Missing old_content or new_content'), 400 unless old_content && new_content
 
     diff_result = call_go_service('/diff', { old_content: old_content, new_content: new_content })
-    new_review = call_python_service('/review', { content: new_content })
+    new_review = call_python_service('/review/v2', { content: new_content })
 
     json(
       diff: diff_result,
@@ -95,7 +95,7 @@ class PolyglotAPI < Sinatra::Base
     return json(error: 'Missing content'), 400 unless content
 
     metrics = call_go_service('/metrics', { content: content })
-    review = call_python_service('/review', { content: content })
+    review = call_python_service('/review/v2', { content: content })
 
     json(
       metrics: metrics,
@@ -154,8 +154,8 @@ class PolyglotAPI < Sinatra::Base
     return 0.0 unless metrics && review && !metrics['error'] && !review['error']
 
     complexity_penalty = (metrics['complexity'] || 0) * 0.1
-    issue_penalty = (review['issues']&.length || 0) * 0.5
-    review_score = review['score'] || 0
+    issue_penalty = (review['findings']&.length || 0) * 0.5
+    review_score = review['quality_score'] || 0
 
     base_score = review_score / 100.0
     final_score = base_score - complexity_penalty - issue_penalty

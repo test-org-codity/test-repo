@@ -1,0 +1,39 @@
+{
+  "advisories": {
+    "symfony/http-foundation": [
+      {
+        "advisoryId": "PKSA-symfony-http-foundation-2019-10913",
+        "packageName": "symfony/http-foundation",
+        "title": "Legacy response handling allows reflected XSS",
+        "link": "https://packagist.org/packages/symfony/http-foundation/advisories?version=2.7.0",
+        "cve": "CVE-2019-10913",
+        "affectedVersions": ">=2.7.0,<2.7.49",
+        "reportedAt": "2019-04-16T00:00:00+00:00",
+        "sources": [
+          {
+            "name": "FriendsOfPHP/security-advisories",
+            "remoteId": "symfony/http-foundation/CVE-2019-10913"
+          }
+        ]
+      }
+    ],
+    "guzzlehttp/guzzle": [
+      {
+        "advisoryId": "PKSA-guzzlehttp-guzzle-2022-31091",
+        "packageName": "guzzlehttp/guzzle",
+        "title": "Cookie jar domain matching issue in older Guzzle releases",
+        "link": "https://packagist.org/packages/guzzlehttp/guzzle/advisories?version=6.3.0",
+        "cve": "CVE-2022-31091",
+        "affectedVersions": ">=6.0.0,<6.5.8",
+        "reportedAt": "2022-06-20T00:00:00+00:00",
+        "sources": [
+          {
+            "name": "GitHub Advisory Database",
+            "remoteId": "GHSA-q559-8m2m-g699"
+          }
+        ]
+      }
+    ]
+  },
+  "abandonedPackages": []
+}

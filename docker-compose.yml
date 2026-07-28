@@ -39,6 +39,17 @@ services:
     networks:
       - polyglot-network
 
+  php-service:
+    build:
+      context: ./php-service
+      dockerfile: Dockerfile
+    ports:
+      - "8084:8084"
+    environment:
+      - PORT=8084
+    networks:
+      - polyglot-network
+
   js-service:
     build:
       context: ./js-service
@@ -61,4 +72,3 @@ services:
 networks:
   polyglot-network:
     driver: bridge
-

@@ -1,0 +1,39 @@
+{
+  "totals": {
+    "errors": 2,
+    "warnings": 1,
+    "fixable": 0
+  },
+  "files": {
+    "src/LegacyReportController.php": {
+      "errors": 2,
+      "warnings": 1,
+      "messages": [
+        {
+          "message": "Missing declare(strict_types=1) declaration.",
+          "source": "PHPCompatibility.Declarations.StrictTypes.MissingDeclaration",
+          "severity": 5,
+          "type": "WARNING",
+          "line": 1,
+          "column": 1
+        },
+        {
+          "message": "Use of deprecated function mysql_query().",
+          "source": "PHPCompatibility.FunctionUse.RemovedFunctions.mysql_queryDeprecatedRemoved",
+          "severity": 5,
+          "type": "ERROR",
+          "line": 11,
+          "column": 9
+        },
+        {
+          "message": "Direct use of $_REQUEST detected in output context.",
+          "source": "Security.Superglobals.DirectAccess",
+          "severity": 5,
+          "type": "ERROR",
+          "line": 22,
+          "column": 25
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "issues": [
+    {
+      "severity": "error",
+      "type": "TaintedSql",
+      "message": "Detected tainted SQL input from $_GET['filter'].",
+      "file_name": "src/LegacyReportController.php",
+      "line_from": 8,
+      "line_to": 11
+    },
+    {
+      "severity": "error",
+      "type": "ForbiddenCode",
+      "message": "Use of eval() is forbidden in application code.",
+      "file_name": "src/LegacyReportController.php",
+      "line_from": 17,
+      "line_to": 18
+    }
+  ]
+}

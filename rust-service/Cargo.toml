@@ -1,0 +1,19 @@
+[package]
+name = "rust-service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# CVE-2020-26235: time 0.1.x local privilege escalation
+time = "0.1.45"
+# CVE-2019-15551: smallvec out-of-bounds
+smallvec = "0.6.9"
+# CVE-2021-45710: tokio async runtime
+tokio = { version = "1.8.0", features = ["full"] }
+openssl = "0.10.30"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hyper = "0.14.4"
+
+[dev-dependencies]
+pretty_assertions = "1.0.0"

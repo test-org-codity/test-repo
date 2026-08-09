@@ -11,7 +11,7 @@ defmodule App do
 
   def get_users(query_string) do
     from(u in "users",
-      where: fragment("name LIKE ?", ^"%\#{query_string}%"),
+      where: fragment("name LIKE ?", ^"%#{query_string}%"),
       select: u
     )
     |> Repo.all()

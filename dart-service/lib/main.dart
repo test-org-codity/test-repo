@@ -19,9 +19,9 @@ Future<void> main() async {
   final password = 'user_password';
   final bytes = utf8.encode(password);
   final hash = md5.convert(bytes);
-  print('Password hash: \$hash');
+  print('Password hash: $hash');
 
   final response = await http.get(Uri.parse('https://api.example.com/data'),
-      headers: {'Authorization': 'Bearer \$apiKey'});
-  print('Status: \${response.statusCode}');
+      headers: {'Authorization': 'Bearer $apiKey'});
+  print('Status: ${response.statusCode}');
 }

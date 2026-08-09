@@ -10,6 +10,10 @@ plugins {
 group = "com.example"
 version = "0.1.0"
 
+repositories {
+    mavenCentral()
+}
+
 dependencies {
     // Log4Shell: CVE-2021-44228
     implementation("org.apache.logging.log4j:log4j-core:2.14.1")

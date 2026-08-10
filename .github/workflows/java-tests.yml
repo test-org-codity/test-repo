@@ -1,0 +1,43 @@
+# Minimal Java Tests CI
+# Works for any repository structure with Java code
+
+name: Java Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Run tests with Maven or Gradle
+      run: |
+        # Check for Maven
+        if [ -f "pom.xml" ]; then
+          echo "Found Maven project"
+          mvn test -B
+        # Check for Gradle
+        elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+          echo "Found Gradle project"
+          if [ -f "gradlew" ]; then
+            chmod +x gradlew
+            ./gradlew test
+          else
+            gradle test
+          fi
+        else
+          echo "No Maven or Gradle build file found"
+          exit 1
+        fi
+

@@ -1,0 +1,119 @@
+# Quick Test Pipeline for Generated Tests
+# This pipeline runs faster by testing only root-level and generated test files
+
+trigger: none # Only trigger on PR
+
+pr:
+  branches:
+    include:
+      - '*'
+      - 'codity/*'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+jobs:
+  - job: QuickGoTests
+    displayName: 'Quick Go Tests'
+    condition: or(contains(variables['Build.SourceBranch'], 'codity'), eq(variables['Build.Reason'], 'PullRequest'))
+    steps:
+      - task: GoTool@0
+        inputs:
+          version: '1.21'
+        displayName: 'Install Go 1.21'
+
+      - script: |
+          echo "Running Go tests..."
+          # Test root-level Go files
+          if ls *.go 1> /dev/null 2>&1; then
+            go mod init test-repo 2>/dev/null || true
+            go test -v . || exit 1
+          fi
+
+          # Test go-service
+          if [ -d "go-service" ]; then
+            cd go-service
+            go mod download
+            go test -v ./... || exit 1
+          fi
+        displayName: 'Run Go Tests'
+
+  - job: QuickPythonTests
+    displayName: 'Quick Python Tests'
+    condition: or(contains(variables['Build.SourceBranch'], 'codity'), eq(variables['Build.Reason'], 'PullRequest'))
+    steps:
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: '3.11'
+        displayName: 'Use Python 3.11'
+
+      - script: |
+          pip install pytest
+          echo "Running Python tests..."
+          # Test root-level Python files
+          if ls test_*.py 1> /dev/null 2>&1; then
+            pytest -v test_*.py || exit 1
+          fi
+
+          # Test python-service
+          if [ -d "python-service" ]; then
+            cd python-service
+            pip install -r requirements.txt 2>/dev/null || true
+            pytest -v tests/ || exit 1
+          fi
+        displayName: 'Run Python Tests'
+
+  - job: QuickRubyTests
+    displayName: 'Quick Ruby Tests'
+    condition: or(contains(variables['Build.SourceBranch'], 'codity'), eq(variables['Build.Reason'], 'PullRequest'))
+    steps:
+      - task: UseRubyVersion@0
+        inputs:
+          versionSpec: '3.2'
+        displayName: 'Use Ruby 3.2'
+
+      - script: |
+          gem install rspec
+          echo "Running Ruby tests..."
+          # Test root-level Ruby files
+          if ls test*.rb *_spec.rb 1> /dev/null 2>&1; then
+            rspec --format documentation *.rb || exit 1
+          fi
+
+          # Test ruby-service
+          if [ -d "ruby-service" ]; then
+            cd ruby-service
+            bundle install
+            bundle exec rspec --format documentation || exit 1
+          fi
+        displayName: 'Run Ruby Tests'
+
+  - job: QuickJavaScriptTests
+    displayName: 'Quick JavaScript/TypeScript Tests'
+    condition: or(contains(variables['Build.SourceBranch'], 'codity'), eq(variables['Build.Reason'], 'PullRequest'))
+    steps:
+      - task: NodeTool@0
+        inputs:
+          versionSpec: '20.x'
+        displayName: 'Install Node.js 20'
+
+      - script: |
+          npm install -g ts-node typescript jest @types/jest
+          echo "Running JavaScript/TypeScript tests..."
+
+          # Test root-level TS files
+          if ls test*.ts test*.js 1> /dev/null 2>&1; then
+            # Create minimal package.json if not exists
+            if [ ! -f "package.json" ]; then
+              echo '{"scripts":{"test":"jest"}}' > package.json
+            fi
+            npm test || exit 1
+          fi
+
+          # Test js-service
+          if [ -d "js-service" ]; then
+            cd js-service
+            npm install
+            npm test || exit 1
+          fi
+        displayName: 'Run JavaScript/TypeScript Tests'

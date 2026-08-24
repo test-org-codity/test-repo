@@ -1,5 +1,4 @@
 require_relative '../model'
-require_relative './build'
 
 # rubocop:disable Metrics/ClassLength
 module Spaceship
@@ -21,7 +20,7 @@ module Spaceship
 
       # Only available with Apple ID auth
       attr_accessor :distribution_type
-      attr_accessor :educationDiscountType
+      attr_accessor :education_discount_type
 
       module ContentRightsDeclaration
         USES_THIRD_PARTY_CONTENT = "USES_THIRD_PARTY_CONTENT"
@@ -69,8 +68,11 @@ module Spaceship
       def removed_from_sale?
         ready_for_distribution = get_ready_for_distribution_app_store_version(includes: nil)
         return true if ready_for_distribution.nil?
-        territoryAvailabilities = get_app_availabilities.territory_availabilities
-        availabilities = territoryAvailabilities.map(&:available)
+        app_availabilities = get_app_availabilities
+        return true if app_availabilities.nil?
+        territory_availabilities = app_availabilities.territory_availabilities
+        return true if territory_availabilities.nil?
+        availabilities = territory_availabilities.map(&:available)
         return availabilities.all?(false)
       end
 
@@ -219,6 +221,7 @@ module Spaceship
       # @return (Bool) Was something changed?
       def ensure_version!(version_string, platform: nil, client: nil)
         client ||= Spaceship::ConnectAPI
+        platform ||= Spaceship::ConnectAPI::Platform::IOS
         app_store_version = get_edit_app_store_version(client: client, platform: platform)
 
         if app_store_version
@@ -245,7 +248,7 @@ module Spaceship
 
         # Get the latest version
         return get_app_store_versions(client: client, filter: filter, includes: includes)
-               .sort_by { |v| Date.parse(v.created_date) }
+               .sort_by { |v| v.created_date ? Date.parse(v.created_date) : Date.new(0) }
                .last
       end
 
@@ -335,14 +338,14 @@ module Spaceship
 
       def disable_b2b
         update(attributes: {
-          distributionType: DistributionType::APP_STORE,
+          distribution_type: DistributionType::APP_STORE,
           education_discount_type: EducationDiscountType::NOT_DISCOUNTED
         })
       end
 
       def enable_b2b
         update(attributes: {
-          distributionType: App::DistributionType::CUSTOM,
+          distribution_type: App::DistributionType::CUSTOM,
           education_discount_type: EducationDiscountType::NOT_APPLICABLE
         })
       end
@@ -490,6 +493,7 @@ module Spaceship
       #
 
       def add_users(client: nil, user_ids: nil)
+        raise ArgumentError, "user_ids must be provided" if user_ids.nil?
         client ||= Spaceship::ConnectAPI
         user_ids.each do |user_id|
           client.add_user_visible_apps(user_id: user_id, app_ids: [id])
@@ -497,6 +501,7 @@ module Spaceship
       end
 
       def remove_users(client: nil, user_ids: nil)
+        raise ArgumentError, "user_ids must be provided" if user_ids.nil?
         client ||= Spaceship::ConnectAPI
         user_ids.each do |user_id|
           client.delete_user_visible_apps(user_id: user_id, app_ids: [id])

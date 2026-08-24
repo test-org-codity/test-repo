@@ -21,7 +21,7 @@ module Spaceship
 
       # Only available with Apple ID auth
       attr_accessor :distribution_type
-      attr_accessor :educationDiscountType
+      attr_accessor :education_discount_type
 
       module ContentRightsDeclaration
         USES_THIRD_PARTY_CONTENT = "USES_THIRD_PARTY_CONTENT"
@@ -68,9 +68,12 @@ module Spaceship
 
       def removed_from_sale?
         ready_for_distribution = get_ready_for_distribution_app_store_version(includes: nil)
-        return true if ready_for_distribution.nil?
-        territoryAvailabilities = get_app_availabilities.territory_availabilities
-        availabilities = territoryAvailabilities.map(&:available)
+        return false if ready_for_distribution.nil?
+        app_availabilities = get_app_availabilities
+        return false if app_availabilities.nil?
+        territory_availabilities = app_availabilities.territory_availabilities
+        return false if territory_availabilities.nil? || territory_availabilities.empty?
+        availabilities = territory_availabilities.map(&:available)
         return availabilities.all?(false)
       end
 
@@ -160,7 +163,7 @@ module Spaceship
       # App Availabilities
       #
 
-      def get_app_availabilities(client: nil, filter: {}, includes: "territoryAvailabilities", limit: { "territoryAvailabilities": 200 })
+      def get_app_availabilities(client: nil, filter: {}, includes: "territoryAvailabilities", limit: { "territoryAvailabilities" => 200 })
         client ||= Spaceship::ConnectAPI
         resp = client.get_app_availabilities(app_id: id, filter: filter, includes: includes, limit: limit, sort: nil)
         return resp.to_models.first
@@ -206,7 +209,13 @@ module Spaceship
 
         # Get the latest version
         version = get_app_store_versions(client: client, filter: filter, includes: "appStoreVersionSubmission")
-                  .sort_by { |v| Gem::Version.new(v.version_string) }
+                  .sort_by do |v|
+                    begin
+                      Gem::Version.new(v.version_string)
+                    rescue ArgumentError
+                      Gem::Version.new("0")
+                    end
+                  end
                   .last
 
         return false if version.nil?
@@ -219,6 +228,7 @@ module Spaceship
       # @return (Bool) Was something changed?
       def ensure_version!(version_string, platform: nil, client: nil)
         client ||= Spaceship::ConnectAPI
+        platform ||= Spaceship::ConnectAPI::Platform::IOS
         app_store_version = get_edit_app_store_version(client: client, platform: platform)
 
         if app_store_version
@@ -245,7 +255,7 @@ module Spaceship
 
         # Get the latest version
         return get_app_store_versions(client: client, filter: filter, includes: includes)
-               .sort_by { |v| Date.parse(v.created_date) }
+               .sort_by { |v| v.created_date ? Time.parse(v.created_date) : Time.at(0) }
                .last
       end
 
@@ -279,7 +289,13 @@ module Spaceship
 
         # Get the latest version
         return get_app_store_versions(client: client, filter: filter, includes: includes)
-               .sort_by { |v| Gem::Version.new(v.version_string) }
+               .sort_by do |v|
+                 begin
+                   Gem::Version.new(v.version_string)
+                 rescue ArgumentError
+                   Gem::Version.new("0")
+                 end
+               end
                .last
       end
 
@@ -335,14 +351,14 @@ module Spaceship
 
       def disable_b2b
         update(attributes: {
-          distributionType: DistributionType::APP_STORE,
+          distribution_type: DistributionType::APP_STORE,
           education_discount_type: EducationDiscountType::NOT_DISCOUNTED
         })
       end
 
       def enable_b2b
         update(attributes: {
-          distributionType: App::DistributionType::CUSTOM,
+          distribution_type: App::DistributionType::CUSTOM,
           education_discount_type: EducationDiscountType::NOT_APPLICABLE
         })
       end
@@ -489,14 +505,14 @@ module Spaceship
       # Users
       #
 
-      def add_users(client: nil, user_ids: nil)
+      def add_users(client: nil, user_ids: [])
         client ||= Spaceship::ConnectAPI
         user_ids.each do |user_id|
           client.add_user_visible_apps(user_id: user_id, app_ids: [id])
         end
       end
 
-      def remove_users(client: nil, user_ids: nil)
+      def remove_users(client: nil, user_ids: [])
         client ||= Spaceship::ConnectAPI
         user_ids.each do |user_id|
           client.delete_user_visible_apps(user_id: user_id, app_ids: [id])

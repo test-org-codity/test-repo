@@ -10,3 +10,7 @@ def total_price(items, tax_rate):
     for item in items:
         total += item["price"] * item["quantity"]
     return total + total * tax_rate
+
+
+def apply_discount(total, percent):
+    return total - (total * percent / 100)

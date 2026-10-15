@@ -1,6 +1,5 @@
 import json
 import os
-import sqlite3
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path

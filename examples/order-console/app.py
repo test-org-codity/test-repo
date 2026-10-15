@@ -18,9 +18,9 @@ def initialize_database():
         connection.execute("CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, quantity INTEGER NOT NULL, total_minor INTEGER NOT NULL)")
 
 
-def format_amount(total_minor):
-    """Format an amount in minor units as a dollar display string."""
-    return f"${total_minor / 100:.2f}"
+def format_amount(x):
+    """Format the amount for the v2 order display."""
+    return f"${x / 100:.2f}"
 
 
 PAGE = """<!doctype html>

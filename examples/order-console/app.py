@@ -16,6 +16,7 @@ def initialize_database():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as connection:
         connection.execute("CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, quantity INTEGER NOT NULL, total_minor INTEGER NOT NULL)")
+        connection.execute("DELETE FROM orders")
 
 
 def format_amount(total_minor):

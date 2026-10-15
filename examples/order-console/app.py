@@ -77,7 +77,7 @@ class OrderHandler(BaseHTTPRequestHandler):
             self.send_body(400, json.dumps({"error": "Invalid JSON"}), "application/json")
             return
         quantity = payload.get("quantity") if isinstance(payload, dict) else None
-        if type(quantity) is not int or not 1 <= quantity <= MAX_QUANTITY:
+        if not isinstance(quantity, int) or not 1 <= quantity <= MAX_QUANTITY:
             self.send_body(400, json.dumps({"error": "Quantity must be an integer from 1 to 100"}), "application/json")
             return
         order_id = str(uuid.uuid4())

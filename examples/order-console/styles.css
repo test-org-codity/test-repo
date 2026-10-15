@@ -1,6 +1,6 @@
 body { color: #17202a; background: #ffffff; font-family: sans-serif; }
 main { max-width: 40rem; margin: 3rem auto; }
 #checkout-submit { display: inline-flex; align-items: center; gap: 0.75rem; color: #17202a; background: #f6f8fa; padding: 0.75rem 1rem; }
-.spinner { display: none; width: 0.75rem; height: 0.75rem; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; }
+.spinner { display: none; width: 0.75rem; height: 0.75rem; border: 2px solid #ffffff; border-right-color: transparent; border-radius: 50%; }
 #checkout-submit[data-busy="true"] .spinner { display: inline-block; }
 #checkout-submit:focus-visible { outline: 3px solid #175cd3; outline-offset: 2px; }

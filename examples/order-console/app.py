@@ -46,6 +46,11 @@ button.addEventListener('click', async () => {
 </script></body></html>"""
 
 
+def store_order(order_id, quantity, total_minor):
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.execute("INSERT INTO orders (id, quantity, total_minor) VALUES (?, ?, ?)", (order_id, quantity, total_minor))
+
+
 class OrderHandler(BaseHTTPRequestHandler):
     def send_body(self, status, body, content_type):
         encoded = body.encode("utf-8")
@@ -82,8 +87,7 @@ class OrderHandler(BaseHTTPRequestHandler):
             return
         order_id = str(uuid.uuid4())
         total_minor = quantity * UNIT_PRICE_MINOR
-        with sqlite3.connect(DB_PATH) as connection:
-            connection.execute("INSERT INTO orders (id, quantity, total_minor) VALUES (?, ?, ?)", (order_id, quantity, total_minor))
+        store_order(order_id, quantity, total_minor)
         self.send_body(201, json.dumps({"id": order_id, "total": format_amount(total_minor)}), "application/json")
 
 

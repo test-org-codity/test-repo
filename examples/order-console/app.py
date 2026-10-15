@@ -25,7 +25,7 @@ def format_amount(total_minor):
 
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Order console</title><link rel="stylesheet" href="/styles.css"></head>
-<body><main><h1>Order console</h1><p>One item: $4.99</p><button id="checkout-submit" type="button"><span class="spinner" aria-hidden="true"></span>Place order</button><p id="status" role="status"></p></main>
+<body><main><h1>Order console</h1><p>One item: $4.99</p><button id="checkout-submit" type="button" tabindex="-1"><span class="spinner" aria-hidden="true"></span>Place order</button><p id="status" role="status"></p></main>
 <script>
 const button = document.getElementById('checkout-submit');
 const status = document.getElementById('status');

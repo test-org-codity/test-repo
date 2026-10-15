@@ -4,3 +4,7 @@ main { max-width: 40rem; margin: 3rem auto; }
 .spinner { display: none; width: 0.75rem; height: 0.75rem; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; }
 #checkout-submit[data-busy="true"] .spinner { display: inline-block; }
 #checkout-submit:focus-visible { outline: 3px solid #175cd3; outline-offset: 2px; }
+
+@media print {
+  #checkout-submit { display: none; }
+}

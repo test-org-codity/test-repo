@@ -1,0 +1,11 @@
+{
+  "name": "guided-review-lab-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Isolated dependency scan fixture for guided review display testing",
+  "dependencies": {
+    "lodash": "4.17.11",
+    "minimist": "0.0.8"
+  }
+}

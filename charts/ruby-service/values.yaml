@@ -1,0 +1,8 @@
+replicaCount: 2
+image:
+  registry: docker.io
+  repository: library/ruby
+  tag: "3.3.0-slim"
+  pullPolicy: IfNotPresent
+service:
+  port: 8082

@@ -1,0 +1,1 @@
+The current source commit requires a persisted empty license scan and a fresh approval.

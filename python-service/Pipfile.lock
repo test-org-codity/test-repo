@@ -1,0 +1,42 @@
+{
+    "_meta": {
+        "hash": {"sha256": "abc123def456"},
+        "pipfile-spec": 6,
+        "requires": {"python_version": "3.9"},
+        "sources": [{"name": "pypi", "url": "https://pypi.org/simple", "verify_ssl": true}]
+    },
+    "default": {
+        "pillow": {
+            "hashes": ["sha256:abc"],
+            "index": "pypi",
+            "version": "==8.1.1"
+        },
+        "jinja2": {
+            "hashes": ["sha256:def"],
+            "index": "pypi",
+            "version": "==2.11.0"
+        },
+        "pyyaml": {
+            "hashes": ["sha256:ghi"],
+            "index": "pypi",
+            "version": "==5.3.1"
+        },
+        "cryptography": {
+            "hashes": ["sha256:jkl"],
+            "index": "pypi",
+            "version": "==3.3.1"
+        },
+        "paramiko": {
+            "hashes": ["sha256:mno"],
+            "index": "pypi",
+            "version": "==2.7.1"
+        }
+    },
+    "develop": {
+        "pytest": {
+            "hashes": ["sha256:pqr"],
+            "index": "pypi",
+            "version": "==7.4.3"
+        }
+    }
+}

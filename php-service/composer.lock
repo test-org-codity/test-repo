@@ -1,0 +1,60 @@
+{
+    "_readme": [
+        "This file is @generated automatically"
+    ],
+    "content-hash": "d8b3f2a1e5c7b9d4f6e8a2c4b6d8e0f2",
+    "packages": [
+        {
+            "name": "guzzlehttp/guzzle",
+            "version": "6.5.3",
+            "source": {"type": "git", "url": "https://github.com/guzzle/guzzle.git", "reference": "abc"},
+            "dist": {"type": "zip", "url": "https://api.github.com/repos/guzzle/guzzle/zipball/abc"},
+            "require": {"guzzlehttp/promises": "^1.0", "guzzlehttp/psr7": "^1.6.1"}
+        },
+        {
+            "name": "monolog/monolog",
+            "version": "1.24.0",
+            "source": {"type": "git", "url": "https://github.com/Seldaek/monolog.git", "reference": "def"},
+            "dist": {"type": "zip", "url": "https://api.github.com/repos/Seldaek/monolog/zipball/def"},
+            "require": {}
+        },
+        {
+            "name": "symfony/http-kernel",
+            "version": "4.4.1",
+            "source": {"type": "git", "url": "https://github.com/symfony/http-kernel.git", "reference": "ghi"},
+            "dist": {"type": "zip", "url": "https://api.github.com/repos/symfony/http-kernel/zipball/ghi"},
+            "require": {}
+        },
+        {
+            "name": "twig/twig",
+            "version": "1.44.0",
+            "source": {"type": "git", "url": "https://github.com/twigphp/Twig.git", "reference": "jkl"},
+            "dist": {"type": "zip", "url": "https://api.github.com/repos/twigphp/Twig/zipball/jkl"},
+            "require": {}
+        },
+        {
+            "name": "phpmailer/phpmailer",
+            "version": "6.1.0",
+            "source": {"type": "git", "url": "https://github.com/PHPMailer/PHPMailer.git", "reference": "mno"},
+            "dist": {"type": "zip", "url": "https://api.github.com/repos/PHPMailer/PHPMailer/zipball/mno"},
+            "require": {}
+        }
+    ],
+    "packages-dev": [
+        {
+            "name": "phpunit/phpunit",
+            "version": "9.0.0",
+            "source": {"type": "git", "url": "https://github.com/sebastianbergmann/phpunit.git", "reference": "pqr"},
+            "dist": {"type": "zip", "url": "https://api.github.com/repos/sebastianbergmann/phpunit/zipball/pqr"},
+            "require": {}
+        }
+    ],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.0.0"
+}

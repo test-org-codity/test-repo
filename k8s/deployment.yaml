@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: js-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: js-service}
+  template:
+    metadata:
+      labels: {app: js-service}
+    spec:
+      containers:
+        - name: js-service
+          image: node:22.22.0-alpine
+          ports:
+            - containerPort: 3000
+        - name: proxy
+          image: nginx:1.27
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: reports
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: reports
+              image: "python:3.12.5-slim"
+              command: ["python", "-m", "reports"]

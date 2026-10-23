@@ -1,0 +1,49 @@
+{
+  "pins" : [
+    {
+      "identity" : "alamofire",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Alamofire/Alamofire.git",
+      "state" : {
+        "revision" : "f3f51c6de3c8e98e946e0f30c7c0a2ab5c1bd7c4",
+        "version" : "5.4.0"
+      }
+    },
+    {
+      "identity" : "swift-crypto",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-crypto.git",
+      "state" : {
+        "revision" : "9dd4fc52a0b1f78a0c706e55197eea3efca47849",
+        "version" : "1.0.0"
+      }
+    },
+    {
+      "identity" : "swift-nio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-nio.git",
+      "state" : {
+        "revision" : "abc123",
+        "version" : "2.32.0"
+      }
+    },
+    {
+      "identity" : "vapor",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/vapor/vapor.git",
+      "state" : {
+        "revision" : "def456",
+        "version" : "4.65.1"
+      }
+    },
+    {
+      "identity" : "local-framework",
+      "kind" : "fileSystem",
+      "location" : "/Users/dev/local-framework",
+      "state" : {
+        "version" : "1.0.0"
+      }
+    }
+  ],
+  "version" : 2
+}

@@ -1,0 +1,65 @@
+packages:
+  http:
+    dependency: "direct main"
+    description:
+      name: http
+      sha256: "6aa2946395183537c8b880962d935877325d6a09a2867c3970c05c0fed6ac482"
+      url: "https://pub.dartlang.org"
+    source: hosted
+    version: "0.13.0"
+  crypto:
+    dependency: "direct main"
+    description:
+      name: crypto
+      sha256: "44eab0f0de01a55c6d51a22044939f80bc35d45e4bce49c42c5861e2e53ccedb"
+      url: "https://pub.dartlang.org"
+    source: hosted
+    version: "3.0.0"
+  logging:
+    dependency: "direct main"
+    description:
+      name: logging
+      sha256: "04094f2eb032b5b7a16c7fb13773bbd3c3b64ae6ad1c16b3c85ed85b2d7025bd"
+      url: "https://pub.dartlang.org"
+    source: hosted
+    version: "1.0.2"
+  dio:
+    dependency: "direct main"
+    description:
+      name: dio
+      sha256: "abc123def456"
+      url: "https://pub.dartlang.org"
+    source: hosted
+    version: "4.0.6"
+  json_annotation:
+    dependency: "direct main"
+    description:
+      name: json_annotation
+      sha256: "def789ghi012"
+      url: "https://pub.dartlang.org"
+    source: hosted
+    version: "4.4.0"
+  mockito:
+    dependency: "direct dev"
+    description:
+      name: mockito
+      sha256: "jkl345mno678"
+      url: "https://pub.dartlang.org"
+    source: hosted
+    version: "5.0.17"
+  test:
+    dependency: "direct dev"
+    description:
+      name: test
+      sha256: "pqr901stu234"
+      url: "https://pub.dartlang.org"
+    source: hosted
+    version: "1.17.0"
+  local_package:
+    dependency: "direct main"
+    description:
+      path: "../local_package"
+    source: path
+    version: "0.0.1"
+sdks:
+  dart: ">=2.17.0 <4.0.0"

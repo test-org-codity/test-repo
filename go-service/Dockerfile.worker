@@ -1,0 +1,9 @@
+# Pinned by digest (golang:1.22.0) — the version is only knowable from the registry.
+FROM golang@sha256:7b297d9abee021bab9046e492506b3c2da8a3722cbf301653186545ecc1e00bb AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -o /worker ./cmd/worker
+
+FROM gcr.io/distroless/static
+COPY --from=build /worker /worker
+ENTRYPOINT ["/worker"]

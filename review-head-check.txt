@@ -1,1 +1,1 @@
-A changed source commit must receive a fresh review and approval.
+The current source commit requires a persisted empty license scan and a fresh approval.

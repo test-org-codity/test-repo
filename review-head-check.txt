@@ -1,1 +1,1 @@
-Verify approval and review evidence for the current source commit.
+A changed source commit must receive a fresh review and approval.

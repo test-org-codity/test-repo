@@ -1,4 +1,5 @@
 import sqlite3
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
 
@@ -9,4 +10,5 @@ def balance_cents(connection: sqlite3.Connection, account_id: str) -> Optional[i
 
 
 def cents_from_amount(amount: float) -> int:
-    return round(amount * 100)
+    cents = (Decimal(str(amount)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return int(cents)

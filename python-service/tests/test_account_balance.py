@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from src.account_balance import balance_cents
+from src.account_balance import balance_cents, cents_from_amount
 
 
 @pytest.fixture
@@ -32,3 +32,8 @@ def test_quoted_account_id_is_opaque(accounts):
 
 def test_sql_expression_does_not_match_another_account(accounts):
     assert balance_cents(accounts, "' OR '1'='1") is None
+
+
+@pytest.mark.parametrize("amount, expected", [(0.145, 15), (1.005, 101), (1.245, 125), (2.355, 236)])
+def test_currency_conversion_rounds_decimal_half_cents_up(amount, expected):
+    assert cents_from_amount(amount) == expected

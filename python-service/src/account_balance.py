@@ -1,6 +1,8 @@
 import sqlite3
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from typing import Optional, Union
+
+CENTS_SHIFT_DIGITS = 2
 
 
 def balance_cents(connection: sqlite3.Connection, account_id: str) -> Optional[int]:
@@ -17,6 +19,8 @@ def cents_from_amount(amount: Union[Decimal, float, int, str]) -> int:
     if not value.is_finite():
         raise ValueError(f"amount must be finite: {amount!r}")
     try:
-        return int((value * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+        with localcontext() as context:
+            context.prec = max(context.prec, len(value.as_tuple().digits) + CENTS_SHIFT_DIGITS)
+            return int(value.scaleb(CENTS_SHIFT_DIGITS).quantize(Decimal(1), rounding=ROUND_HALF_UP))
     except InvalidOperation:
         raise ValueError(f"amount is out of range: {amount!r}") from None

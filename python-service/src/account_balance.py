@@ -18,5 +18,5 @@ def cents_from_amount(amount: Union[Decimal, float, int, str]) -> int:
         raise ValueError(f"amount must be finite: {amount!r}")
     try:
         return int((value * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
-    except InvalidOperation:
+    except ArithmeticError:
         raise ValueError(f"amount is out of range: {amount!r}") from None

@@ -10,5 +10,4 @@ def balance_cents(connection: sqlite3.Connection, account_id: str) -> Optional[i
 
 
 def cents_from_amount(amount: float) -> int:
-    cents = Decimal(str(amount)) * 100
-    return int(cents.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return round(amount * 100)
